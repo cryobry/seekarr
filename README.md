@@ -1,52 +1,49 @@
 ![banner](resources/banner.png)
-
-<h1 align="center">Seekarr</h1>
+---
 <p align="center">
-  A Python script that connects Lidarr with Soulseek!
+  Connects Lidarr with Soulseek!
 </p>
 
 # About
 
-Seekarr reads all of your "wanted" or "cutoff unmet" albums from Lidarr and downloads them using Slskd. It uses the libraries: [pyarr](https://github.com/totaldebug/pyarr) and [slskd-api](https://github.com/bigoulours/slskd-python-api) to make this happen.
+Seekarr reads the "wanted" or "cutoff unmet" albums from Lidarr and downloads them using Slskd. It uses the [pyarr](https://github.com/totaldebug/pyarr) and [slskd-api](https://github.com/bigoulours/slskd-python-api) libraries to make this happen.
 
-As downloads complete in Slskd, Seekarr can automatically tell Lidarr to import the files, making it a truly hands-off process.
+As downloads complete in Slskd, Seekarr can automatically tell Lidarr to import the files (or run in standalone mode using configurable options).
 
 # Setup
 
 ## Install and configure Lidarr and Slskd
 
-**Lidarr**
-[https://lidarr.audio/](https://lidarr.audio/)
+**[Lidarr](https://lidarr.audio/)**
 
-Make sure Lidarr can see your Slskd download directory. If you are running Lidarr in a Docker container you may need to mount the directory. You will then need to add it to your config (see "download_dir" under "Lidarr" in the example config).
+Make sure Lidarr can see your Slskd download directory. If you are running Lidarr in a container you may need to mount the directory. You will then need to add it to your config (see "download_dir" under [Lidarr] in the [example config](config.ini)).
 
-**Slskd**
-[https://github.com/slskd/slskd](https://github.com/slskd/slskd)
+**[Slskd](https://github.com/slskd/slskd)**
 
-The script requires an api key from Slskd. Take a look at their [docs](https://github.com/slskd/slskd/blob/master/docs/config.md#authentication) on how to set it up (all you have to do is add it to the yml file under `web, authentication, api_keys, my_api_key`).
+Seekarr requires an [api key from Slskd](https://github.com/slskd/slskd/blob/master/docs/config.md#authentication) added to the the yml file under `web, authentication, api_keys, my_api_key`).
 
-## Docker
+## Podman/Docker (recommended)
 
-The best way to run the script is through Docker. A Docker image is available through [ghcr.io](https://github.com/cryobry/seekarr/pkgs/container/seekarr) and [dockerhub](https://hub.docker.com/r/cryobry/seekarr).
+Container images are available via [ghcr.io](https://github.com/cryobry/seekarr/pkgs/container/seekarr) and [dockerhub](https://hub.docker.com/r/cryobry/seekarr).
 
 Assuming your user and group is `1000:1000` and that you have a directory structure similar to the following:
 
 ```bash
 /
-├── Media
-│   ├── Downloads
-│   ├── Music
+├── media
+│   ├── downloads
+│   ├── music
 │   └── slskd_downloads
-└── Containers
+└── containers
     ├── lidarr
     ├── slskd
     └── seekarr
 ```
 
-Where `Downloads` could be any music download directory, `slskd_downloads` is your slskd download directory, and `Music` is the location for your music files, an example docker run command might be:
+Where `downloads` could be any music download directory, `slskd_downloads` is your slskd download directory, and `music` is the location for your music files, an example run command might be:
 
 ```shell
-docker run -d \
+podman run -d \
   --name seekarr \
   --restart unless-stopped \
   --hostname seekarr \
@@ -54,11 +51,10 @@ docker run -d \
   -e SCRIPT_INTERVAL=300 \
   -v /media/slskd_downloads:/downloads \
   -v /containers/seekarr:/data \
-  --user 1000:1000 \
   cryobry/seekarr:latest
 ```
 
-Or you can also set it up with the provided [Docker Compose](docker-compose.yml).
+Or use the provided [Compose file](docker-compose.yml).
 
 ```yml
 services:
@@ -66,15 +62,14 @@ services:
     image: cryobry/seekarr:latest
     container_name: seekarr
     hostname: seekarr
-    user: 1000:1000 # this should be set to your UID and GID, which can be determined via `id -u` and `id -g`, respectively
+    user: 1000:1000 # set to your UID and GID, which can be determined via `id -u` and `id -g`, respectively
     environment:
       - TZ=Etc/UTC
       - SCRIPT_INTERVAL=300 # Script interval in seconds
     volumes:
-      # "You can set /downloads to whatever you want but will then need to change the Slskd download dir in your config file"
+      # You can set /downloads to whatever you want but will then need to change the Slskd download dir in your config file
       - /media/slskd_downloads:/downloads
-      # Select where you are storing your config file.
-      # Leave "/data" since that's where the script expects the config file to be
+      # Seekarr expects the config file at "/data"
       - /containers/seekarr:/data
     restart: unless-stopped
 ```
@@ -93,9 +88,7 @@ Note: You **must** edit both volumes in the docker compose above.
 
   - This is where you put the path to your config file. It must point to `/data`.
 
-You can also edit `SCRIPT_INTERVAL` to choose how often (in seconds) you want the script to run (default is every 300 seconds). By default, the user is set to the appropriate user on your system. If you wish to edit this, change `user: 1000:1000` in the Docker compose to whatever you prefer. You can determine the user via the command `id -u` and the group via `id -g`.
-
-It is important that `lidarr` and `slskd` agree on the user/group. If they do not agree, it is unlikely you will have successful imports. Also, it is important to note that Lidarr will need access to the downloads directory of Slskd.
+You can also edit `SCRIPT_INTERVAL` to choose how often (in seconds) you want the script to run (default is every 300 seconds).
 
 For a more complete example, see the compose file below, which contains `lidarr`, `slskd`, and `seekarr`:
 
@@ -147,12 +140,9 @@ services:
     restart: unless-stopped
 ```
 
-## Configure the `config.ini` file
+## Configure `config.ini`
 
-The config file has a bunch of different settings that affect how the script runs.
-Any lists in the config, such as "accepted_countries", need to be comma separated with no spaces (e.g. `","` not `" , "` or `" ,"`).
-
-**Example config:**
+**Example [config.ini](config.ini):**
 
 ```ini
 [Lidarr]
@@ -251,11 +241,12 @@ max_bytes = 1048576
 backup_count = 3
 ```
 
-[Full list of countries from MusicBrainz.](https://musicbrainz.org/doc/Release/Country)
+Lists should be comma-separated with no spaces.
 
-[Full list of formats (also from MusicBrainz, but for some reason they don't have a nice list)](https://pastebin.com/raw/pzGVUgaE)
+[List of countries from MusicBrainz.](https://musicbrainz.org/doc/Release/Country)
 
-An [example config](config.ini) is included in the repo.
+[List of formats from MusicBrainz.](https://pastebin.com/raw/pzGVUgaE)
+
 
 
 ## Running
