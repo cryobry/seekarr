@@ -527,18 +527,22 @@ def search_for_album(album):
     # Add timeout here to increase reliability with Slskd. Sometimes it doesn't update search status fast enough. More of an issue with lots of historical searches in slskd
     time.sleep(5)
     start_time = time.time()
-    while True:
-        if slskd.searches.state(search["id"], False)["state"] != "InProgress":  # Added False here as we don't want the search results here. Just the state.
-            break
-        time.sleep(1)
-        if (time.time() - start_time) > cfg.search_timeout:
-            logger.error("Failed to perform search via SLSKD due to timeout on search results.")
-            return False
+    try:
+        while True:
+            if slskd.searches.state(search["id"], False)["state"] != "InProgress":  # Added False here as we don't want the search results here. Just the state.
+                break
+            time.sleep(1)
+            if (time.time() - start_time) > cfg.search_timeout:
+                logger.error("Failed to perform search via SLSKD due to timeout on search results.")
+                return False
 
-    search_results = slskd.searches.search_responses(search["id"])  # We use this API call twice. Let's just cache it locally.
-    logger.info(f"Search returned {len(search_results)} results")
-    if cfg.delete_searches:
-        slskd.searches.delete(search["id"])
+        search_results = slskd.searches.search_responses(search["id"])  # We use this API call twice. Let's just cache it locally.
+        logger.info(f"Search returned {len(search_results)} results")
+        if cfg.delete_searches:
+            slskd.searches.delete(search["id"])
+    except Exception:
+        logger.exception(f"Failed to perform search via SLSKD: {query}")
+        return False
 
     if not len(search_results) > 0:
         return False
