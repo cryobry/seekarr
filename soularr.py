@@ -244,8 +244,7 @@ def cancel_and_delete(files):
             slskd.transfers.cancel_download(username=file["username"], id=file["id"])
         except Exception:
             logger.warning(f"Failed to cancel download {file['filename']} for {file['username']}", exc_info=True)
-        delete_dir = file["file_dir"].split("\\")[-1]
-        os.chdir(cfg.slskd_download_dir)
+        delete_dir = os.path.join(cfg.slskd_download_dir, file["file_dir"].split("\\")[-1])
 
         if os.path.exists(delete_dir):
             shutil.rmtree(delete_dir)
@@ -814,7 +813,6 @@ def search_and_queue(albums):
 
 
 def process_completed_album(album_data, failed_grab):
-    os.chdir(cfg.slskd_download_dir)
     if cfg.rename_download_folders is True:
         import_folder_name = sanitize_folder_name(album_data["artist"] + " - " + album_data["title"] + " (" + album_data["year"] + ")")
     else:
@@ -1069,12 +1067,13 @@ def grab_most_wanted(albums):
     return count
 
 def move_failed_import(src_path):
-    failed_imports_dir = "failed_imports"
+    failed_imports_dir = os.path.join(cfg.slskd_download_dir, "failed_imports")
 
     if not os.path.exists(failed_imports_dir):
         os.makedirs(failed_imports_dir)
 
     folder_name = os.path.basename(src_path)
+    folder_path = os.path.join(cfg.slskd_download_dir, folder_name)
     target_path = os.path.join(failed_imports_dir, folder_name)
 
     counter = 1
@@ -1082,8 +1081,8 @@ def move_failed_import(src_path):
         target_path = os.path.join(failed_imports_dir, f"{folder_name}_{counter}")
         counter += 1
 
-    if os.path.exists(folder_name):
-        shutil.move(folder_name, target_path)
+    if os.path.exists(folder_path):
+        shutil.move(folder_path, target_path)
         logger.info(f"Failed import moved to: {target_path}")
 
     return os.path.abspath(target_path)
