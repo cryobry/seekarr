@@ -677,7 +677,6 @@ def try_multi_enqueue(release, all_tracks, results, allowed_filetype, artist_nam
     Otherwise it's basically the same as the single album search.
     """
     split_release = []
-    tmp_results = copy.deepcopy(results)
     for media in release["media"]:
         disk = {}
         disk["source"] = None
@@ -691,8 +690,8 @@ def try_multi_enqueue(release, all_tracks, results, allowed_filetype, artist_nam
     total = len(split_release)
     count_found = 0
     for disk in split_release:
-        for username in tmp_results:
-            if allowed_filetype not in tmp_results[username]:
+        for username in results:
+            if allowed_filetype not in results[username]:
                 continue
             file_dirs = results[username][allowed_filetype]
             found, directory, file_dir = check_for_match(disk["tracks"], allowed_filetype, file_dirs, username)
