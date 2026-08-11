@@ -16,6 +16,7 @@ import copy
 from dataclasses import dataclass
 import music_tag
 import slskd_api
+from requests.exceptions import HTTPError, RequestException
 from pyarr import LidarrAPI
 from pyarr.exceptions import PyarrError
 
@@ -428,10 +429,24 @@ def check_for_match(tracks, allowed_filetype, file_dirs, username):
                     directory = slskd.users.directory(username=username, directory=file_dir)[0]
                 else:
                     directory = slskd.users.directory(username=username, directory=file_dir)
-            except Exception:
-                logger.exception(f'Error getting directory from user: "{username}"')
+            except HTTPError as ex:
+                status_code = ex.response.status_code if ex.response is not None else "unknown"
+                logger.warning(f'HTTP error getting directory from user "{username}" folder "{file_dir}": {status_code}')
+                if ex.response is not None and ex.response.text:
+                    logger.debug(f"SLSKD response body: {ex.response.text[:500]}")
+
+                # slskd 5xx errors are generally transient server failures.
+                if isinstance(status_code, int) and 500 <= status_code < 600:
+                    continue
+
                 broken_user.append(username)
                 logger.debug(f"Updated broken users {broken_user}")
+                return False, {}, ""
+            except RequestException:
+                logger.exception(f'Network error getting directory from user: "{username}"')
+                return False, {}, ""
+            except Exception:
+                logger.exception(f'Error getting directory from user: "{username}"')
                 return False, {}, ""
             folder_cache[username][file_dir] = copy.deepcopy(directory)
         else:
