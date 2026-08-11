@@ -30,6 +30,13 @@ class EnvInterpolation(configparser.ExtendedInterpolation):
         return os.path.expandvars(value)
 
 
+def parse_csv_list(value: str, lower: bool = False) -> list[str]:
+    """Split a comma-separated config value into stripped, non-empty items."""
+    if lower:
+        value = value.lower()
+    return [item.strip() for item in value.split(",") if item.strip()]
+
+
 # Allows backwards compatibility for users updating an older version of Soularr
 # without using the new [Logging] section in the config.ini file.
 DEFAULT_LOGGING_CONF = {
@@ -108,24 +115,24 @@ class AppConfig:
             minimum_match_ratio=ini.getfloat("Search Settings", "minimum_filename_match_ratio", fallback=0.5),
             minimum_search_interval=ini.getint("Search Settings", "minimum_search_interval", fallback=5),
             page_size=ini.getint("Search Settings", "number_of_albums_to_grab", fallback=10),
-            ignored_users=ini.get("Search Settings", "ignored_users", fallback="").split(","),
-            search_blacklist=[w.strip() for w in ini.get("Search Settings", "search_blacklist", fallback="").split(",") if w.strip()],
-            title_blacklist=ini.get("Search Settings", "title_blacklist", fallback="").lower().split(","),
+            ignored_users=parse_csv_list(ini.get("Search Settings", "ignored_users", fallback="")),
+            search_blacklist=parse_csv_list(ini.get("Search Settings", "search_blacklist", fallback="")),
+            title_blacklist=parse_csv_list(ini.get("Search Settings", "title_blacklist", fallback=""), lower=True),
             album_prepend_artist=ini.getboolean("Search Settings", "album_prepend_artist", fallback=False),
             search_timeout=ini.getint("Search Settings", "search_timeout", fallback=5000),
             maximum_peer_queue=ini.getint("Search Settings", "maximum_peer_queue", fallback=50),
             minimum_peer_upload_speed=ini.getint("Search Settings", "minimum_peer_upload_speed", fallback=0),
             download_filtering=ini.getboolean("Download Settings", "download_filtering", fallback=False),
             use_extension_whitelist=ini.getboolean("Download Settings", "use_extension_whitelist", fallback=False),
-            extensions_whitelist=ini.get("Download Settings", "extensions_whitelist", fallback="txt,nfo,jpg").split(","),
+            extensions_whitelist=parse_csv_list(ini.get("Download Settings", "extensions_whitelist", fallback="txt,nfo,jpg")),
             rename_download_folders=ini.getboolean("Download Settings", "rename_download_folders", fallback=True),
             use_selected_lidarr_release=ini.getboolean("Release Settings", "use_selected_lidarr_release", fallback=False),
             use_most_common_tracknum=ini.getboolean("Release Settings", "use_most_common_tracknum", fallback=True),
             allow_multi_disc=ini.getboolean("Release Settings", "allow_multi_disc", fallback=True),
-            accepted_countries=ini.get("Release Settings", "accepted_countries", fallback="Europe,Japan,United Kingdom,United States,[Worldwide],Australia,Canada").split(","),
+            accepted_countries=parse_csv_list(ini.get("Release Settings", "accepted_countries", fallback="Europe,Japan,United Kingdom,United States,[Worldwide],Australia,Canada")),
             skip_region_check=ini.getboolean("Release Settings", "skip_region_check", fallback=False),
-            accepted_formats=ini.get("Release Settings", "accepted_formats", fallback="CD,Digital Media,Vinyl").split(","),
-            allowed_filetypes=ini.get("Search Settings", "allowed_filetypes", fallback="flac,mp3").split(","),
+            accepted_formats=parse_csv_list(ini.get("Release Settings", "accepted_formats", fallback="CD,Digital Media,Vinyl")),
+            allowed_filetypes=parse_csv_list(ini.get("Search Settings", "allowed_filetypes", fallback="flac,mp3")),
             failed_import_denylist=ini.getboolean("Search Settings", "failed_import_denylist", fallback=True),
             lock_file_path=os.path.join(args.var_dir, ".soularr.lock"),
             config_file_path=os.path.join(args.config_dir, "config.ini"),
