@@ -42,6 +42,38 @@ def as_list(value, lower: bool = False) -> list[str]:
     return [item.lower() for item in items] if lower else items
 
 
+def env_override(section: str, key: str, value):
+    """
+    Override a resolved config value with an env var named "<SECTION>_<KEY>" (matching the YAML
+    path, e.g. lidarr.api_key -> LIDARR_API_KEY), coercing it to match the existing value's type.
+    """
+    raw = os.environ.get(f"{section}_{key}".upper())
+    if raw is None:
+        return value
+    if isinstance(value, bool):
+        return raw.strip().lower() in ("1", "true", "yes", "on")
+    if isinstance(value, list):
+        return raw.split(",")
+    if isinstance(value, int):
+        try:
+            return int(raw)
+        except ValueError:
+            return raw
+    if isinstance(value, float):
+        try:
+            return float(raw)
+        except ValueError:
+            return raw
+    return raw
+
+
+def require_config_value(value, name: str):
+    """Raise a clear error if a required config value is missing from both config.yml and its env var."""
+    if value is None or value == "":
+        raise ValueError(f"Missing required config value: {name} (set it in config.yml or via its env var)")
+    return value
+
+
 # Allows backwards compatibility for users updating an older version of Seekarr
 # without using the new "logging" section in the config.yml file.
 DEFAULT_LOGGING_CONF = {
@@ -119,48 +151,52 @@ class AppConfig:
         resolved_slskd = {**slskd_cfg, **(source_cfg.get("slskd") or {})}
 
         lidarr = LidarrConfig(
-            api_key=lidarr_cfg["api_key"],
-            host_url=lidarr_cfg["host_url"],
-            download_dir=lidarr_cfg["download_dir"],
-            disable_sync=bool(resolved_lidarr.get("disable_sync", False)),
-            sources=as_list(lidarr_cfg.get("sources", ["missing"]), lower=True),
-            type=str(resolved_lidarr.get("type", "first_page")).lower().strip(),
-            page_size=int(resolved_lidarr.get("page_size", 10)),
-            title_blacklist=as_list(resolved_lidarr.get("title_blacklist"), lower=True),
-            failed_import_denylist=bool(resolved_lidarr.get("failed_import_denylist", True)),
-            use_selected_lidarr_release=bool(resolved_lidarr.get("use_selected_lidarr_release", False)),
-            use_most_common_tracknum=bool(resolved_lidarr.get("use_most_common_tracknum", True)),
-            allow_multi_disc=bool(resolved_lidarr.get("allow_multi_disc", True)),
+            api_key=require_config_value(env_override("lidarr", "api_key", lidarr_cfg.get("api_key")), "lidarr.api_key"),
+            host_url=require_config_value(env_override("lidarr", "host_url", lidarr_cfg.get("host_url")), "lidarr.host_url"),
+            download_dir=require_config_value(env_override("lidarr", "download_dir", lidarr_cfg.get("download_dir")), "lidarr.download_dir"),
+            disable_sync=bool(env_override("lidarr", "disable_sync", resolved_lidarr.get("disable_sync", False))),
+            sources=as_list(env_override("lidarr", "sources", lidarr_cfg.get("sources", ["missing"])), lower=True),
+            type=str(env_override("lidarr", "type", resolved_lidarr.get("type", "first_page"))).lower().strip(),
+            page_size=int(env_override("lidarr", "page_size", resolved_lidarr.get("page_size", 10))),
+            title_blacklist=as_list(env_override("lidarr", "title_blacklist", resolved_lidarr.get("title_blacklist")), lower=True),
+            failed_import_denylist=bool(env_override("lidarr", "failed_import_denylist", resolved_lidarr.get("failed_import_denylist", True))),
+            use_selected_lidarr_release=bool(env_override("lidarr", "use_selected_lidarr_release", resolved_lidarr.get("use_selected_lidarr_release", False))),
+            use_most_common_tracknum=bool(env_override("lidarr", "use_most_common_tracknum", resolved_lidarr.get("use_most_common_tracknum", True))),
+            allow_multi_disc=bool(env_override("lidarr", "allow_multi_disc", resolved_lidarr.get("allow_multi_disc", True))),
             accepted_countries=as_list(
-                resolved_lidarr.get("accepted_countries", ["Europe", "Japan", "United Kingdom", "United States", "[Worldwide]", "Australia", "Canada"])
+                env_override(
+                    "lidarr",
+                    "accepted_countries",
+                    resolved_lidarr.get("accepted_countries", ["Europe", "Japan", "United Kingdom", "United States", "[Worldwide]", "Australia", "Canada"]),
+                )
             ),
-            skip_region_check=bool(resolved_lidarr.get("skip_region_check", False)),
-            accepted_formats=as_list(resolved_lidarr.get("accepted_formats", ["CD", "Digital Media", "Vinyl"])),
+            skip_region_check=bool(env_override("lidarr", "skip_region_check", resolved_lidarr.get("skip_region_check", False))),
+            accepted_formats=as_list(env_override("lidarr", "accepted_formats", resolved_lidarr.get("accepted_formats", ["CD", "Digital Media", "Vinyl"]))),
         )
 
         slskd = SlskdConfig(
-            api_key=slskd_cfg["api_key"],
-            host_url=slskd_cfg["host_url"],
-            download_dir=slskd_cfg["download_dir"],
-            url_base=slskd_cfg.get("url_base", "/"),
-            stalled_timeout=int(resolved_slskd.get("stalled_timeout", 3600)),
-            remote_queue_timeout=int(resolved_slskd.get("remote_queue_timeout", 300)),
-            delete_searches=bool(resolved_slskd.get("delete_searches", True)),
-            remove_completed_downloads=bool(resolved_slskd.get("remove_completed_downloads", True)),
-            requeue_failed_downloads=bool(resolved_slskd.get("requeue_failed_downloads", True)),
-            timeout=int(resolved_slskd.get("timeout", 5)),
-            maximum_peer_queue=int(resolved_slskd.get("maximum_peer_queue", 50)),
-            minimum_peer_upload_speed=int(resolved_slskd.get("minimum_peer_upload_speed", 0)),
-            minimum_match_ratio=float(resolved_slskd.get("minimum_filename_match_ratio", 0.5)),
-            minimum_search_interval=int(resolved_slskd.get("minimum_search_interval", 5)),
-            ignored_users=as_list(resolved_slskd.get("ignored_users")),
-            search_blacklist=as_list(resolved_slskd.get("search_blacklist")),
-            album_prepend_artist=bool(resolved_slskd.get("album_prepend_artist", False)),
-            filtering=bool(resolved_slskd.get("filtering", False)),
-            use_extension_whitelist=bool(resolved_slskd.get("use_extension_whitelist", False)),
-            extensions_whitelist=as_list(resolved_slskd.get("extensions_whitelist", ["txt", "nfo", "jpg"])),
-            rename_download_folders=bool(resolved_slskd.get("rename_download_folders", True)),
-            allowed_filetypes=as_list(resolved_slskd.get("allowed_filetypes", ["flac", "mp3"])),
+            api_key=require_config_value(env_override("slskd", "api_key", slskd_cfg.get("api_key")), "slskd.api_key"),
+            host_url=require_config_value(env_override("slskd", "host_url", slskd_cfg.get("host_url")), "slskd.host_url"),
+            download_dir=require_config_value(env_override("slskd", "download_dir", slskd_cfg.get("download_dir")), "slskd.download_dir"),
+            url_base=str(env_override("slskd", "url_base", slskd_cfg.get("url_base", "/"))),
+            stalled_timeout=int(env_override("slskd", "stalled_timeout", resolved_slskd.get("stalled_timeout", 3600))),
+            remote_queue_timeout=int(env_override("slskd", "remote_queue_timeout", resolved_slskd.get("remote_queue_timeout", 300))),
+            delete_searches=bool(env_override("slskd", "delete_searches", resolved_slskd.get("delete_searches", True))),
+            remove_completed_downloads=bool(env_override("slskd", "remove_completed_downloads", resolved_slskd.get("remove_completed_downloads", True))),
+            requeue_failed_downloads=bool(env_override("slskd", "requeue_failed_downloads", resolved_slskd.get("requeue_failed_downloads", True))),
+            timeout=int(env_override("slskd", "timeout", resolved_slskd.get("timeout", 5))),
+            maximum_peer_queue=int(env_override("slskd", "maximum_peer_queue", resolved_slskd.get("maximum_peer_queue", 50))),
+            minimum_peer_upload_speed=int(env_override("slskd", "minimum_peer_upload_speed", resolved_slskd.get("minimum_peer_upload_speed", 0))),
+            minimum_match_ratio=float(env_override("slskd", "minimum_filename_match_ratio", resolved_slskd.get("minimum_filename_match_ratio", 0.5))),
+            minimum_search_interval=int(env_override("slskd", "minimum_search_interval", resolved_slskd.get("minimum_search_interval", 5))),
+            ignored_users=as_list(env_override("slskd", "ignored_users", resolved_slskd.get("ignored_users"))),
+            search_blacklist=as_list(env_override("slskd", "search_blacklist", resolved_slskd.get("search_blacklist"))),
+            album_prepend_artist=bool(env_override("slskd", "album_prepend_artist", resolved_slskd.get("album_prepend_artist", False))),
+            filtering=bool(env_override("slskd", "filtering", resolved_slskd.get("filtering", False))),
+            use_extension_whitelist=bool(env_override("slskd", "use_extension_whitelist", resolved_slskd.get("use_extension_whitelist", False))),
+            extensions_whitelist=as_list(env_override("slskd", "extensions_whitelist", resolved_slskd.get("extensions_whitelist", ["txt", "nfo", "jpg"]))),
+            rename_download_folders=bool(env_override("slskd", "rename_download_folders", resolved_slskd.get("rename_download_folders", True))),
+            allowed_filetypes=as_list(env_override("slskd", "allowed_filetypes", resolved_slskd.get("allowed_filetypes", ["flac", "mp3"]))),
         )
 
         return cls(

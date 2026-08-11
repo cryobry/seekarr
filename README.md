@@ -108,12 +108,9 @@ services:
 
 ## Configure `config.yml`
 
-Top-level `lidarr:` and `slskd:` hold both connection settings (`api_key`, `host_url`, `download_dir`, etc.) and the
-default search/download behavior applied to every source. `lidarr.sources` lists which Lidarr wanted lists to process,
-and in what order (e.g. `missing`, `cutoff_unmet`). A top-level block matching one of those source names (e.g.
-`missing:` / `cutoff_unmet:`) can override `accepted_formats` (Lidarr release format) and `allowed_filetypes` (Slskd
-quality) for that specific source only — useful if, say, you want to accept Vinyl releases for missing albums but
-only CD/Digital for cutoff-unmet upgrades.
+The `lidarr.sources` key lists which wanted lists to process, and in what order (e.g. `missing`, `cutoff_unmet`).
+The `missing:` and `cutoff_unmet:` blocks override the top-level `lidarr:` and `slskd:` defaults using nested schemas.
+Useful if, say, you want to accept Vinyl releases for missing albums but only CD/Digital for cutoff-unmet upgrades.
 
 **Example [config.yml](config.yml):**
 
@@ -281,16 +278,28 @@ logging:
 
 List of [countries](https://musicbrainz.org/doc/Release/Country) and [formats](https://pastebin.com/raw/pzGVUgaE) from MusicBrainz.
 
-## Running
+### Environment Variable Overrides
 
-Install the requirements and run Seekar:
+Env vars always take priority over `config.yml`, including per-source (`missing:`/`cutoff_unmet:`) overrides.
+
+Any `lidarr:`/`slskd:` setting can be overridden with an env var named after its YAML key, uppercased
+and prefixed with the section (similar to Slskd):
+
+- `lidarr.api_key` -> `LIDARR_API_KEY`
+- `slskd.minimum_filename_match_ratio` -> `SLSKD_MINIMUM_FILENAME_MATCH_RATIO`
+
+This is handy for keeping secrets like API keys out of `config.yml` (e.g. via Docker secrets).
+
+List values are comma-separated (e.g. `LIDARR_ACCEPTED_FORMATS=CD,Digital Media,Vinyl`).
+
+## Running
 
 ```bash
 python -m pip install -r requirements.txt
 python seekarr.py
 ```
 
-Note: the `config.yml` file needs to be in the same directory as `seekarr.py`.
+Note: `seekarr.py` expects `config.yml` to be in the same directory unless `--config` is specified.
 
 ## Logging
 
