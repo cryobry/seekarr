@@ -641,7 +641,7 @@ def downloads_all_done(downloads):
     return all_done, error_list, remote_queue
 
 
-def try_enqueue(all_tracks, results, allowed_filetype):
+def try_enqueue(all_tracks, results, allowed_filetype, artist_name, album_name):
     """
     Single album match and enqueue.
     Iterates over all users and enqueues a found match
@@ -661,25 +661,15 @@ def try_enqueue(all_tracks, results, allowed_filetype):
                 if downloads is not None:
                     return True, downloads
                 else:
-                    album = lidarr.get_album(all_tracks[0]["albumId"])
-                    album_name = album["title"]
-                    artist_name = album["artist"]["artistName"]
                     logger.info(f"Failed to enqueue download to slskd for {artist_name} - {album_name} from {username}")
             except Exception as e:
-                album = lidarr.get_album(all_tracks[0]["albumId"])
-                album_name = album["title"]
-                artist_name = album["artist"]["artistName"]
-
                 logger.warning(f"Exception enqueueing tracks: {e}")
                 logger.info(f"Exception enqueueing download to slskd for {artist_name} - {album_name} from {username}")
-    album = lidarr.get_album(all_tracks[0]["albumId"])
-    album_name = album["title"]
-    artist_name = album["artist"]["artistName"]
     logger.info(f"Failed to enqueue {artist_name} - {album_name}")
     return False, None
 
 
-def try_multi_enqueue(release, all_tracks, results, allowed_filetype):
+def try_multi_enqueue(release, all_tracks, results, allowed_filetype, artist_name, album_name):
     """
     This is the multi-disk/media path for locating and enqueueing an album
     It does a flat search first. Then it does a split search.
@@ -731,19 +721,12 @@ def try_multi_enqueue(release, all_tracks, results, allowed_filetype):
                     all_downloads.extend(downloads)
                     enqueued += 1
                 else:
-                    album = lidarr.get_album(all_tracks[0]["albumId"])
-                    album_name = album["title"]
-                    artist_name = album["artist"]["artistName"]
                     logger.info(f"Failed to enqueue download to slskd for {artist_name} - {album_name} from {username}")
                     # Delete ALL other downloads in all_downloads list
                     if len(all_downloads) > 0:
                         cancel_and_delete(all_downloads)
                         return False, None
             except Exception:
-                album = lidarr.get_album(all_tracks[0]["albumId"])
-                album_name = album["title"]
-                artist_name = album["artist"]["artistName"]
-
                 logger.exception("Exception enqueueing tracks")
                 logger.info(f"Exception enqueueing download to slskd for {artist_name} - {album_name} from {username}")
                 # Delete all other downloads in all_downloads list
@@ -770,6 +753,7 @@ def find_download(album, grab_list):
     """
     album_id = album["id"]
     artist_name = album["artist"]["artistName"]
+    album_name = album["title"]
     artist_id = album["artistId"]
     results = search_cache[album_id]
     for allowed_filetype in cfg.allowed_filetypes:
@@ -783,26 +767,20 @@ def find_download(album, grab_list):
             releases.remove(release)
             release_id = release["id"]
             all_tracks = lidarr.get_tracks(artistId=artist_id, albumId=album_id, albumReleaseId=release_id)
-            found, downloads = try_enqueue(all_tracks, results, allowed_filetype)
+            found, downloads = try_enqueue(all_tracks, results, allowed_filetype, artist_name, album_name)
+
+            if not found and len(release["media"]) > 1:
+                found, downloads = try_multi_enqueue(release, all_tracks, results, allowed_filetype, artist_name, album_name)
 
             if found:
-                grab_list[album_id] = {}
-                grab_list[album_id]["files"] = downloads
-                grab_list[album_id]["filetype"] = allowed_filetype
-                grab_list[album_id]["title"] = album["title"]
-                grab_list[album_id]["artist"] = artist_name
-                grab_list[album_id]["year"] = album["releaseDate"][0:4]
+                grab_list[album_id] = {
+                    "files": downloads,
+                    "filetype": allowed_filetype,
+                    "title": album_name,
+                    "artist": artist_name,
+                    "year": album["releaseDate"][0:4],
+                }
                 return True
-            elif len(release["media"]) > 1:
-                found, downloads = try_multi_enqueue(release, all_tracks, results, allowed_filetype)
-                if found:
-                    grab_list[album_id] = {}
-                    grab_list[album_id]["files"] = downloads
-                    grab_list[album_id]["filetype"] = allowed_filetype
-                    grab_list[album_id]["title"] = album["title"]
-                    grab_list[album_id]["artist"] = artist_name
-                    grab_list[album_id]["year"] = album["releaseDate"][0:4]
-                    return True
     return False
 
 
