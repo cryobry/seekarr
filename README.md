@@ -197,8 +197,9 @@ skip_region_check = False
 accepted_formats = CD,Digital Media,Vinyl
 
 [Search Settings]
-# Maximum time to let search run in milliseconds
-search_timeout = 5000
+# Search timeout in seconds
+search_timeout = 5
+# Maximum number of peers allowed in the user's queue
 maximum_peer_queue = 50
 # Minimum upload speed (bits/sec)
 minimum_peer_upload_speed = 0
@@ -209,6 +210,7 @@ minimum_search_interval = 5
 # Preferred file types and qualities (most to least preferred)
 # Use "flac" or "mp3" to ignore quality details
 allowed_filetypes = flac 24/192,flac 16/44.1,flac,mp3 320,mp3
+# Users to ignore
 ignored_users = User1,User2,Fred,Bob
 # Prepend artist name when searching for albums
 album_prepend_artist = False

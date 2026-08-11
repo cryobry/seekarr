@@ -125,7 +125,7 @@ class AppConfig:
             search_blacklist=parse_csv_list(ini.get("Search Settings", "search_blacklist", fallback="")),
             title_blacklist=parse_csv_list(ini.get("Search Settings", "title_blacklist", fallback=""), lower=True),
             album_prepend_artist=ini.getboolean("Search Settings", "album_prepend_artist", fallback=False),
-            search_timeout=ini.getint("Search Settings", "search_timeout", fallback=5000),
+            search_timeout=ini.getint("Search Settings", "search_timeout", fallback=5),
             maximum_peer_queue=ini.getint("Search Settings", "maximum_peer_queue", fallback=50),
             minimum_peer_upload_speed=ini.getint("Search Settings", "minimum_peer_upload_speed", fallback=0),
             download_filtering=ini.getboolean("Download Settings", "download_filtering", fallback=False),
@@ -548,7 +548,7 @@ def search_for_album(album):
     try:
         search = slskd.searches.search_text(
             searchText=query,
-            searchTimeout=cfg.search_timeout,
+            searchTimeout=max(1, int(cfg.search_timeout * 1000)),
             filterResponses=True,
             maximumPeerQueueLength=cfg.maximum_peer_queue,
             minimumPeerUploadSpeed=cfg.minimum_peer_upload_speed,
