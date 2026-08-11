@@ -1114,7 +1114,8 @@ def setup_logging(config, var_dir):
     fmt = log_config.get("format", DEFAULT_LOGGING_CONF["format"])
     datefmt = log_config.get("datefmt", DEFAULT_LOGGING_CONF["datefmt"])
 
-    logging.basicConfig(level=level, format=fmt, datefmt=datefmt)
+    # force=True drops any handlers from a previous loop cycle so they don't stack up.
+    logging.basicConfig(level=level, format=fmt, datefmt=datefmt, force=True)
 
     log_to_file = config.getboolean("Logging", "log_to_file", fallback=True)
     if log_to_file:
@@ -1282,6 +1283,107 @@ def add_to_failed_import_denylist(file_path, album_id, artist, title, folder_pat
         logger.info(f"Added to failed import denylist: {artist} - {title} (ID: {album_id})")
 
 
+def run_once(args) -> int:
+    """Runs a single Soularr cycle: fetch wanted albums, search, download, and import. Returns a process exit code."""
+    global cfg, lidarr, slskd, search_cache, folder_cache, broken_user
+
+    lock_file_path = os.path.join(args.var_dir, ".soularr.lock")
+    config_file_path = os.path.join(args.config_dir, "config.ini")
+
+    if not is_docker() and os.path.exists(lock_file_path) and args.lock_file:
+        logger.info(f"Soularr instance is already running.")
+        return 1
+
+    try:
+        if not is_docker() and args.lock_file:
+            with open(lock_file_path, "w") as lock_file:
+                lock_file.write("locked")
+
+        # Disable interpolation to make storing logging formats in the config file much easier
+        config = configparser.ConfigParser(interpolation=EnvInterpolation())
+
+        if os.path.exists(config_file_path):
+            config.read(config_file_path)
+            setup_logging(config, args.var_dir)
+        else:
+            if is_docker():
+                logger.error(
+                    'Config file does not exist! Please mount "/data" and place your "config.ini" file there. Alternatively, pass `--config-dir /directory/of/your/liking` as post arguments to store the config somewhere else.'
+                )
+                logger.error("See: https://github.com/mrusse/soularr/blob/main/config.ini for an example config file.")
+            else:
+                logger.error(
+                    "Config file does not exist! Please place it in the working directory. Alternatively, pass `--config-dir /directory/of/your/liking` as post arguments to store the config somewhere else."
+                )
+                logger.error("See: https://github.com/mrusse/soularr/blob/main/config.ini for an example config file.")
+            return 0
+
+        # Load the configuration into a structured object for easier access
+        cfg = AppConfig.from_ini(config, args)
+
+        # Init API clients
+        slskd = slskd_api.SlskdClient(host=cfg.slskd_host_url, api_key=cfg.slskd_api_key, url_base=cfg.slskd_url_base)
+        lidarr = LidarrAPI(cfg.lidarr_host_url, cfg.lidarr_api_key)
+
+        # Init cache. The wide search returns all the data we need. This prevents us from hammering the users on the Soulseek network
+        search_cache = {}
+        folder_cache = {}
+        broken_user = []
+        wanted_records = []
+
+        try:
+            for source in cfg.search_sources:
+                logging.debug(f"Getting records from {source}")
+                missing = source == "missing"
+                wanted_records.extend(get_records(missing))
+        except ValueError as ex:
+            logger.error(f"An error occurred: {ex}")
+            return 0
+
+        if len(wanted_records) > 0:
+            try:
+                filtered = filter_list(wanted_records)
+                if filtered is not None:
+                    failed = grab_most_wanted(filtered)
+                else:
+                    failed = 0
+                    logger.info("No releases wanted that aren't on the deny list and/or blacklisted")
+            except Exception:
+                logger.exception("Fatal error!")
+                return 0
+            if failed == 0:
+                logger.info("Soularr finished.")
+                slskd.transfers.remove_completed_downloads()
+            else:
+                logger.info(f"{failed}: releases failed to find a match in the search results and are still wanted.")
+                slskd.transfers.remove_completed_downloads()
+        else:
+            logger.info("No releases wanted.")
+
+        return 0
+
+    finally:
+        # Remove the lock file after activity is done
+        remove_lock_file(lock_file_path)
+
+
+def get_interval(args) -> int:
+    """
+    CLI --interval takes priority, then the SCRIPT_INTERVAL env var. Docker defaults to
+    300s if neither is set (matching the old run.sh default); non-Docker defaults to
+    running once, preserving manual/cron usage.
+    """
+    if args.interval is not None:
+        return args.interval
+    env_value = os.environ.get("SCRIPT_INTERVAL")
+    if env_value is not None:
+        try:
+            return int(env_value)
+        except ValueError:
+            logger.warning(f"Invalid SCRIPT_INTERVAL value: {env_value!r}. Ignoring.")
+    return 300 if is_docker() else 0
+
+
 def main():
     global cfg, lidarr, slskd, logger, search_cache, folder_cache, broken_user
 
@@ -1321,87 +1423,24 @@ def main():
         help="Disable lock file creation",
     )
 
+    parser.add_argument(
+        "--interval",
+        type=int,
+        default=None,
+        help="Seconds to wait between runs, looping forever. Falls back to the SCRIPT_INTERVAL env var. Runs once and exits if neither is set (default behavior).",
+    )
+
     args = parser.parse_args()
 
-    lock_file_path = os.path.join(args.var_dir, ".soularr.lock")
-    config_file_path = os.path.join(args.config_dir, "config.ini")
+    interval = get_interval(args)
 
-    if not is_docker() and os.path.exists(lock_file_path) and args.lock_file:
-        logger.info(f"Soularr instance is already running.")
-        sys.exit(1)
-
-    try:
-        if not is_docker() and args.lock_file:
-            with open(lock_file_path, "w") as lock_file:
-                lock_file.write("locked")
-
-        # Disable interpolation to make storing logging formats in the config file much easier
-        config = configparser.ConfigParser(interpolation=EnvInterpolation())
-
-        if os.path.exists(config_file_path):
-            config.read(config_file_path)
-            setup_logging(config, args.var_dir)
-        else:
-            if is_docker():
-                logger.error(
-                    'Config file does not exist! Please mount "/data" and place your "config.ini" file there. Alternatively, pass `--config-dir /directory/of/your/liking` as post arguments to store the config somewhere else.'
-                )
-                logger.error("See: https://github.com/mrusse/soularr/blob/main/config.ini for an example config file.")
-            else:
-                logger.error(
-                    "Config file does not exist! Please place it in the working directory. Alternatively, pass `--config-dir /directory/of/your/liking` as post arguments to store the config somewhere else."
-                )
-                logger.error("See: https://github.com/mrusse/soularr/blob/main/config.ini for an example config file.")
-            remove_lock_file(lock_file_path)
-            sys.exit(0)
-
-        # Load the configuration into a structured object for easier access
-        cfg = AppConfig.from_ini(config, args)
-
-        # Init API clients
-        slskd = slskd_api.SlskdClient(host=cfg.slskd_host_url, api_key=cfg.slskd_api_key, url_base=cfg.slskd_url_base)
-        lidarr = LidarrAPI(cfg.lidarr_host_url, cfg.lidarr_api_key)
-
-        # Init cache. The wide search returns all the data we need. This prevents us from hammering the users on the Soulseek network
-        search_cache = {}
-        folder_cache = {}
-        broken_user = []
-        wanted_records = []
-
-        try:
-            for source in cfg.search_sources:
-                logging.debug(f"Getting records from {source}")
-                missing = source == "missing"
-                wanted_records.extend(get_records(missing))
-        except ValueError as ex:
-            logger.error(f"An error occurred: {ex}")
-            logger.error("Exiting...")
-            sys.exit(0)
-
-        if len(wanted_records) > 0:
-            try:
-                filtered = filter_list(wanted_records)
-                if filtered is not None:
-                    failed = grab_most_wanted(filtered)
-                else:
-                    failed = 0
-                    logger.info("No releases wanted that aren't on the deny list and/or blacklisted")
-            except Exception:
-                logger.exception("Fatal error! Exiting...")
-                remove_lock_file(lock_file_path)
-                sys.exit(0)
-            if failed == 0:
-                logger.info("Soularr finished. Exiting...")
-                slskd.transfers.remove_completed_downloads()
-            else:
-                logger.info(f"{failed}: releases failed to find a match in the search results and are still wanted.")
-                slskd.transfers.remove_completed_downloads()
-        else:
-            logger.info("No releases wanted. Exiting...")
-
-    finally:
-        # Remove the lock file after activity is done
-        remove_lock_file(lock_file_path)
+    if interval > 0:
+        while True:
+            run_once(args)
+            logger.info(f"Waiting {interval} seconds before checking again...")
+            time.sleep(interval)
+    else:
+        sys.exit(run_once(args))
 
 
 if __name__ == "__main__":
