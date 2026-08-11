@@ -180,6 +180,8 @@ host_url = http://lidarr:8686
 # Path to slskd downloads inside the Lidarr container
 download_dir = /data/slskd_downloads
 # If true, Lidarr won't auto-import from Slskd
+# Soularr tracks grabbed albums itself in memory in this mode, so they aren't
+# redownloaded on later loops within the same run. This is not persisted across restarts.
 disable_sync = False
 
 [Slskd]

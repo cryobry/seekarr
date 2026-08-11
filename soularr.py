@@ -156,6 +156,10 @@ cfg: AppConfig = None  # type: ignore[assignment]
 search_cache: dict = {}
 folder_cache: dict = {}
 broken_user: list = []
+# Albums grabbed while Lidarr sync is disabled, so we don't regrab them on later loops
+# in the same run (Lidarr never learns about them, so it can't tell us itself). Not
+# persisted across restarts.
+grabbed_albums: set = set()
 
 
 def album_match(lidarr_tracks, slskd_tracks, username, filetype):
@@ -489,6 +493,17 @@ def filter_list(albums):
         for album in temp_list:
             if str(album["id"]) in import_denylist:
                 logger.info(f"Skipping failed import album: {album['artist']['artistName']} - {album['title']} (ID: {album['id']})")
+            else:
+                filtered_temp.append(album)
+        temp_list = filtered_temp
+
+    if cfg.lidarr_disable_sync:
+        # Lidarr never learns about these downloads, so it'll keep reporting them as wanted forever.
+        # Track grabs in memory ourselves so we don't redownload the same album on every loop.
+        filtered_temp = []
+        for album in temp_list:
+            if album["id"] in grabbed_albums:
+                logger.info(f"Skipping already grabbed album: {album['artist']['artistName']} - {album['title']} (ID: {album['id']})")
             else:
                 filtered_temp.append(album)
         temp_list = filtered_temp
@@ -879,6 +894,7 @@ def process_completed_album(album_data, failed_grab):
                     logger.warning(f"Skipping removal of {rm_dir} because it's not empty.")
         if cfg.lidarr_disable_sync:
             logger.info(f"Sync disabled. Skipping Lidarr import of {album_data['artist']} - {album_data['title']}")
+            grabbed_albums.add(album_data["album_id"])
             return
         logger.info(f"Attempting Lidarr import of {album_data['artist']} - {album_data['title']}")
         for file in album_data["files"]:
