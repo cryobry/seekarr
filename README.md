@@ -147,11 +147,10 @@ services:
     restart: unless-stopped
 ```
 
-## Configure your config file
+## Configure the `config.ini` file
 
-The config file has a bunch of different settings that affect how the script runs. Any lists in the config, such as "accepted_countries", need to be comma separated with no spaces (e.g. `","` not `" , "` or `" ,"`).
-
-Given the directory structure above, you can use the following configuration:
+The config file has a bunch of different settings that affect how the script runs.
+Any lists in the config, such as "accepted_countries", need to be comma separated with no spaces (e.g. `","` not `" , "` or `" ,"`).
 
 **Example config:**
 
