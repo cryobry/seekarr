@@ -1,4 +1,4 @@
-![banner](https://raw.githubusercontent.com/cryobry/seekarr/refs/heads/main/resources/banner.png)
+![banner](resources/banner.png)
 
 <h1 align="center">Seekarr</h1>
 <p align="center">
@@ -58,7 +58,7 @@ docker run -d \
   cryobry/seekarr:latest
 ```
 
-Or you can also set it up with the provided [Docker Compose](https://github.com/cryobry/seekarr/blob/main/docker-compose.yml).
+Or you can also set it up with the provided [Docker Compose](docker-compose.yml).
 
 ```yml
 services:
@@ -255,7 +255,7 @@ backup_count = 3
 
 [Full list of formats (also from MusicBrainz, but for some reason they don't have a nice list)](https://pastebin.com/raw/pzGVUgaE)
 
-An [example config](https://github.com/cryobry/seekarr/blob/main/config.ini) is included in the repo.
+An [example config](config.ini) is included in the repo.
 
 
 ## Running
