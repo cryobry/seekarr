@@ -159,7 +159,6 @@ def album_match(lidarr_tracks, slskd_tracks, username, filetype):
 
     lidarr_album = lidarr.get_album(lidarr_tracks[0]["albumId"])
     lidarr_album_name = lidarr_album["title"]
-    lidarr_artist_name = lidarr_album["artist"]["artistName"]
 
     for lidarr_track in lidarr_tracks:
         lidarr_filename = lidarr_track["title"] + "." + filetype.split(" ")[0]
