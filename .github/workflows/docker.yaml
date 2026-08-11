@@ -5,11 +5,15 @@ on:
   push:
     branches:
       - '**'
+    paths:
+      - 'seekarr.py'
     tags:
       - 'v*'
   pull_request:
     branches:
       - 'main'
+    paths:
+      - 'seekarr.py'
 
 jobs:
   docker:
