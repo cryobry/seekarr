@@ -110,22 +110,20 @@ class AppConfig:
     def from_yaml(cls, data: dict, args, source: str | None = None) -> "AppConfig":
         lidarr_cfg: dict = data.get("lidarr") or {}
         slskd_cfg: dict = data.get("slskd") or {}
-        search_cfg: dict = data.get("search") or {}
-        defaults_lidarr: dict = search_cfg.get("lidarr") or {}
-        defaults_slskd: dict = search_cfg.get("slskd") or {}
 
-        # Layer this source's overrides over the shared defaults. Called once per source
-        # in the run_once loop so the global cfg reflects the source currently being processed.
-        source_cfg: dict = (search_cfg.get(source) or {}) if source else {}
-        resolved_lidarr = {**defaults_lidarr, **(source_cfg.get("lidarr") or {})}
-        resolved_slskd = {**defaults_slskd, **(source_cfg.get("slskd") or {})}
+        # Layer this source's overrides (top-level `missing`/`cutoff_unmet` blocks) over the
+        # top-level lidarr/slskd defaults. Called once per source in the run_once loop so the
+        # global cfg reflects the source currently being processed.
+        source_cfg: dict = (data.get(source) or {}) if source else {}
+        resolved_lidarr = {**lidarr_cfg, **(source_cfg.get("lidarr") or {})}
+        resolved_slskd = {**slskd_cfg, **(source_cfg.get("slskd") or {})}
 
         lidarr = LidarrConfig(
             api_key=lidarr_cfg["api_key"],
             host_url=lidarr_cfg["host_url"],
             download_dir=lidarr_cfg["download_dir"],
             disable_sync=bool(resolved_lidarr.get("disable_sync", False)),
-            sources=as_list(search_cfg.get("sources", ["missing"]), lower=True),
+            sources=as_list(lidarr_cfg.get("sources", ["missing"]), lower=True),
             type=str(resolved_lidarr.get("type", "first_page")).lower().strip(),
             page_size=int(resolved_lidarr.get("page_size", 10)),
             title_blacklist=as_list(resolved_lidarr.get("title_blacklist"), lower=True),
@@ -1271,7 +1269,7 @@ def get_records(source: str) -> list:
     else:
         remove_lock_file(cfg.lock_file_path)
 
-        raise ValueError(f"[search.lidarr.type] - {cfg.lidarr.type = } is not valid")
+        raise ValueError(f"[lidarr.type] - {cfg.lidarr.type = } is not valid")
 
     try:
         queued_records = lidarr.get_queue(sort_dir="ascending", sort_key="albums.title")
