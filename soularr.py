@@ -1092,6 +1092,12 @@ def is_docker():
     return os.getenv("IN_DOCKER") is not None
 
 
+def remove_lock_file(path: str) -> None:
+    """Docker doesn't use a lock file, so only remove it outside Docker."""
+    if not is_docker() and os.path.exists(path):
+        os.remove(path)
+
+
 def slskd_version_check(version, target="0.22.2"):
     version_tuple = tuple(map(int, version.split(".")[:3]))
     target_tuple = tuple(map(int, target.split(".")[:3]))
@@ -1197,8 +1203,7 @@ def get_records(missing: bool) -> list:
         wanted_records = wanted["records"]
 
     else:
-        if os.path.exists(cfg.lock_file_path) and not is_docker():
-            os.remove(cfg.lock_file_path)
+        remove_lock_file(cfg.lock_file_path)
 
         raise ValueError(f"[Search Settings] - {cfg.search_type = } is not valid")
 
@@ -1349,8 +1354,7 @@ def main():
                     "Config file does not exist! Please place it in the working directory. Alternatively, pass `--config-dir /directory/of/your/liking` as post arguments to store the config somewhere else."
                 )
                 logger.error("See: https://github.com/mrusse/soularr/blob/main/config.ini for an example config file.")
-            if os.path.exists(lock_file_path) and not is_docker():
-                os.remove(lock_file_path)
+            remove_lock_file(lock_file_path)
             sys.exit(0)
 
         # Load the configuration into a structured object for easier access
@@ -1386,9 +1390,7 @@ def main():
                     logger.info("No releases wanted that aren't on the deny list and/or blacklisted")
             except Exception:
                 logger.exception("Fatal error! Exiting...")
-
-                if os.path.exists(lock_file_path) and not is_docker():
-                    os.remove(lock_file_path)
+                remove_lock_file(lock_file_path)
                 sys.exit(0)
             if failed == 0:
                 logger.info("Soularr finished. Exiting...")
@@ -1401,8 +1403,7 @@ def main():
 
     finally:
         # Remove the lock file after activity is done
-        if os.path.exists(lock_file_path) and not is_docker():
-            os.remove(lock_file_path)
+        remove_lock_file(lock_file_path)
 
 
 if __name__ == "__main__":
