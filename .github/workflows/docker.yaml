@@ -60,7 +60,7 @@ jobs:
           else
             echo "tag=${GITHUB_REF_NAME}" >> $GITHUB_OUTPUT
           fi
-          echo "dockerhub_image=${{ secrets.DOCKERHUB_USERNAME }}/soularr" >> $GITHUB_OUTPUT
+          echo "dockerhub_image=${{ secrets.DOCKERHUB_USERNAME }}/seekarr" >> $GITHUB_OUTPUT
           
       - name: Build and push
         uses: docker/build-push-action@v6

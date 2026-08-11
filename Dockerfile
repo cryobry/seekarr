@@ -1,22 +1,16 @@
-FROM python:3.11
+FROM python:3.14
 
 WORKDIR /app
 
-COPY requirements.txt soularr.py run.sh .
-COPY webui/ webui/
+COPY requirements.txt seekarr.py ./
 COPY resources/ resources/
 
 RUN apt-get update \
     && apt-get install -y tini \
     && rm -rf /var/lib/apt/lists/* \
-    && pip install --no-cache-dir -r requirements.txt \
-    && sed -i 's/\r$//' run.sh \
-    && chmod +x run.sh
+    && pip install --no-cache-dir -r requirements.txt
 
 ENV PYTHONUNBUFFERED=1
 ENV IN_DOCKER=Yes
 
-EXPOSE 8265
-
-ENTRYPOINT ["tini", "-g", "--"]
-CMD ["/app/run.sh"]
+ENTRYPOINT ["tini", "-g", "--", "python", "-u", "/app/seekarr.py"]
