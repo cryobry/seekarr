@@ -316,13 +316,8 @@ def choose_release(artist_name, releases):
         for release in releases:
             if release["trackCount"] == most_common_trackcount:
                 return release
-        else:
-            default_release = releases[0]
 
-    else:
-        default_release = releases[0]
-
-    return default_release
+    return releases[0]
 
 
 def verify_filetype(file, allowed_filetype):
