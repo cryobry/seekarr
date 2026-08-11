@@ -63,6 +63,8 @@ class AppConfig:
     stalled_timeout: int
     remote_queue_timeout: int
     delete_searches: bool
+    remove_completed_downloads: bool
+    requeue_failed_downloads: bool
     # Search Settings
     search_type: str
     search_sources: list
@@ -112,6 +114,8 @@ class AppConfig:
             stalled_timeout=ini.getint("Slskd", "stalled_timeout", fallback=3600),
             remote_queue_timeout=ini.getint("Slskd", "remote_queue_timeout", fallback=300),
             delete_searches=ini.getboolean("Slskd", "delete_searches", fallback=True),
+            remove_completed_downloads=ini.getboolean("Slskd", "remove_completed_downloads", fallback=True),
+            requeue_failed_downloads=ini.getboolean("Slskd", "requeue_failed_downloads", fallback=True),
             search_type=ini.get("Search Settings", "search_type", fallback="first_page").lower().strip(),
             search_sources=["missing", "cutoff_unmet"] if search_source == "all" else [search_source],
             minimum_match_ratio=ini.getfloat("Search Settings", "minimum_filename_match_ratio", fallback=0.5),
@@ -956,6 +960,9 @@ def monitor_downloads(grab_list, failed_grab):
         if len(problems) == len(grab_list[album_id]["files"]):
             delete_album("Failed grab of")
             return True
+        if not cfg.requeue_failed_downloads:
+            delete_album("Failed grab of")
+            return True
         file.setdefault("retry", 0)
         file["retry"] += 1
         if file["retry"] > MAX_FILE_RETRIES:
@@ -975,6 +982,9 @@ def monitor_downloads(grab_list, failed_grab):
         """
         files = grab_list[album_id]["files"]
         if len(problems) == len(files):
+            delete_album("Failed grab of")
+            return True
+        if not cfg.requeue_failed_downloads:
             delete_album("Failed grab of")
             return True
         # Only requeue once all non-problem files have settled (no files mid-transfer).
@@ -1368,10 +1378,12 @@ def run_once(args) -> int:
                 return 0
             if failed == 0:
                 logger.info("Soularr finished.")
-                slskd.transfers.remove_completed_downloads()
+                if cfg.remove_completed_downloads:
+                    slskd.transfers.remove_completed_downloads()
             else:
                 logger.info(f"{failed}: releases failed to find a match in the search results and are still wanted.")
-                slskd.transfers.remove_completed_downloads()
+                if cfg.remove_completed_downloads:
+                    slskd.transfers.remove_completed_downloads()
         else:
             logger.info("No releases wanted.")
 

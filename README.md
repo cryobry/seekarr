@@ -194,6 +194,11 @@ download_dir = /downloads
 delete_searches = False
 # Max seconds to wait for downloads (prevents infinite hangs)
 stalled_timeout = 3600
+# Remove successfully completed downloads from slskd's transfer list after each run
+remove_completed_downloads = True
+# Requeue individual files that error out or get rejected during download. If False,
+# the whole album grab is marked failed as soon as one file has a problem, with no retry.
+requeue_failed_downloads = True
 
 [Release Settings]
 # Use the release manually selected in Lidarr, ignoring the other release settings below
