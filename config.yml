@@ -1,0 +1,152 @@
+lidarr:
+  # Get from Lidarr: Settings > General > Security
+  api_key: yourlidarrapikeygoeshere
+  # URL Lidarr uses (e.g., what you use in your browser)
+  host_url: http://lidarr:8686
+  # Path to slskd downloads inside the Lidarr container
+  download_dir: /data/slskd_downloads
+
+slskd:
+  # Create manually (see docs)
+  api_key: yourslskdapikeygoeshere
+  # URL Slskd uses
+  host_url: http://slskd:5030
+  # URL path to append to host_url (ex. http://slskd:5030/slskd = /slskd) 
+  url_base: /
+  # Download path inside Slskd container
+  download_dir: /downloads
+
+search:
+  # Which Lidarr wanted lists to pull from: missing (default), cutoff_unmet
+  sources:
+    - missing
+    - cutoff_unmet
+
+  lidarr:
+    # Search modes: all, incrementing_page, first_page
+    # "all": search for every wanted record
+    # "first_page": repeatedly searches the first page
+    # "incrementing_page": starts with the first page and increments on each run.
+    type: incrementing_page
+    # Albums to process per run
+    page_size: 10
+    # Blacklist words in album or track title search (case-insensitive)
+    title_blacklist:
+      - Word1
+      - word2
+    # Use the release manually selected in Lidarr, ignoring the other release settings below
+    use_selected_lidarr_release: False
+    # Pick release with most common track count
+    use_most_common_tracknum: True
+    allow_multi_disc: True
+    # Accepted release countries
+    accepted_countries:
+      - Europe
+      - Japan
+      - United Kingdom
+      - United States
+      - "[Worldwide]"
+      - Australia
+      - Canada
+    # Don't check the region of the release
+    skip_region_check: False
+    # If true, Lidarr won't auto-import from Slskd and Seekarr will skip grabbed albums
+    disable_sync: False
+    # Skip re-downloading albums that previously failed to import into Lidarr
+    failed_import_denylist: True
+    # Accepted formats to download
+    accepted_formats:
+      - CD
+      - Digital Media
+      - Vinyl
+
+  slskd:
+    # Search timeout in seconds
+    timeout: 10
+    # Maximum number of peers allowed in the user's queue
+    maximum_peer_queue: 50
+    # Minimum upload speed (bits/sec)
+    minimum_peer_upload_speed: 100
+    # Minimum match ratio between Lidarr track and Soulseek filename
+    minimum_filename_match_ratio: 0.8
+    # Minimum time (seconds) between searches. Set to 0 to disable.
+    minimum_search_interval: 5
+    # Delete search after Seekarr runs
+    delete_searches: False
+    # Max seconds to wait for downloads
+    stalled_timeout: 7200
+    # How long to wait for a remote queue to finish before timing out
+    remote_queue_timeout: 3600
+    # Remove successfully completed downloads from slskd's transfer list after each run
+    remove_completed_downloads: True
+    # Requeue individual files that error out or get rejected during download. 
+    # If False, the whole album grab is marked failed as soon as one file errors, with no retry.
+    requeue_failed_downloads: True
+    # Prepend artist name when searching for albums
+    album_prepend_artist: False
+    filtering: True
+    use_extension_whitelist: False
+    extensions_whitelist:
+      - lrc
+      - nfo
+      - txt
+    # Blacklist words in search query (case-insensitive)
+    search_blacklist:
+      - WordToStripFromSearch1
+      - WordToStripFromSearch2
+    # Rename completed downloads to "Artist - Album (Year)" before Lidarr import
+    rename_download_folders: True
+    # Preferred file types and qualities (most to least preferred)
+    # Use "flac" or "mp3" to ignore quality details
+    allowed_filetypes:
+      - flac 24/48
+      - flac 24/192
+      - flac 16/44.1
+      - flac
+      - mp3 320
+      - mp3
+    # Users to ignore
+    ignored_users:
+      - User1
+      - User2
+
+  missing:
+    lidarr:
+      accepted_formats:
+        - CD
+        - Digital Media
+        - Vinyl
+    slskd:
+      allowed_filetypes:
+        - flac 24/96
+        - flac 24/48
+        - flac 24/192
+        - flac 16/44.1
+        - flac
+        - mp3 320
+        - mp3
+  cutoff_unmet:
+    lidarr:
+      accepted_formats:
+        - CD
+        - Digital Media
+    slskd:
+      allowed_filetypes:
+        - flac 24/192
+        - flac 16/44.1
+        - flac
+
+logging:
+  # Passed to Python's logging.basicConfig()
+  # See: https://docs.python.org/3/library/logging.html
+  level: INFO
+  format: "[%(levelname)s|%(module)s|L%(lineno)d] %(asctime)s: %(message)s"
+  datefmt: "%Y-%m-%dT%H:%M:%S%z"
+  # Enable logging to a file in addition to stdout
+  log_to_file: True
+  # Log filename (resolved relative to the data directory)
+  log_file: seekarr.log
+  # Maximum log file size in bytes before rotation (default: 1MB)
+  max_bytes: 1048576
+  # Number of rotated log files to keep
+  backup_count: 3
