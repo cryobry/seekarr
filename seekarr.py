@@ -39,7 +39,7 @@ def parse_csv_list(value: str, lower: bool = False) -> list[str]:
     return [item.strip() for item in value.split(",") if item.strip()]
 
 
-# Allows backwards compatibility for users updating an older version of Soularr
+# Allows backwards compatibility for users updating an older version of Seekarr
 # without using the new [Logging] section in the config.ini file.
 DEFAULT_LOGGING_CONF = {
     "level": "INFO",
@@ -140,7 +140,7 @@ class AppConfig:
             accepted_formats=parse_csv_list(ini.get("Release Settings", "accepted_formats", fallback="CD,Digital Media,Vinyl")),
             allowed_filetypes=parse_csv_list(ini.get("Search Settings", "allowed_filetypes", fallback="flac,mp3")),
             failed_import_denylist=ini.getboolean("Search Settings", "failed_import_denylist", fallback=True),
-            lock_file_path=os.path.join(args.var_dir, ".soularr.lock"),
+            lock_file_path=os.path.join(args.var_dir, ".seekarr.lock"),
             config_file_path=os.path.join(args.config_dir, "config.ini"),
             current_page_file_path=os.path.join(args.var_dir, ".current_page.txt"),
             failed_import_denylist_file_path=os.path.join(args.var_dir, "failed_imports.json"),
@@ -149,7 +149,7 @@ class AppConfig:
 # === API Clients & Logging ===
 lidarr: LidarrAPI = None  # type: ignore[assignment]
 slskd: slskd_api.SlskdClient = None  # type: ignore[assignment]
-logger = logging.getLogger("soularr")
+logger = logging.getLogger("seekarr")
 cfg: AppConfig = None  # type: ignore[assignment]
 
 # === Runtime State & Caches ===
@@ -1160,7 +1160,7 @@ def setup_logging(config, var_dir):
 
     log_to_file = config.getboolean("Logging", "log_to_file", fallback=True)
     if log_to_file:
-        log_filename = config.get("Logging", "log_file", fallback="soularr.log")
+        log_filename = config.get("Logging", "log_file", fallback="seekarr.log")
         log_file_path = os.path.join(var_dir, log_filename)
         max_bytes = config.getint("Logging", "max_bytes", fallback=1048576)
         backup_count = config.getint("Logging", "backup_count", fallback=3)
@@ -1325,14 +1325,14 @@ def add_to_failed_import_denylist(file_path, album_id, artist, title, folder_pat
 
 
 def run_once(args) -> int:
-    """Runs a single Soularr cycle: fetch wanted albums, search, download, and import. Returns a process exit code."""
+    """Runs a single Seekarr cycle: fetch wanted albums, search, download, and import. Returns a process exit code."""
     global cfg, lidarr, slskd, search_cache, folder_cache, broken_user
 
-    lock_file_path = os.path.join(args.var_dir, ".soularr.lock")
+    lock_file_path = os.path.join(args.var_dir, ".seekarr.lock")
     config_file_path = os.path.join(args.config_dir, "config.ini")
 
     if not is_docker() and os.path.exists(lock_file_path) and args.lock_file:
-        logger.info(f"Soularr instance is already running.")
+        logger.info(f"Seekarr instance is already running.")
         return 1
 
     try:
@@ -1351,12 +1351,12 @@ def run_once(args) -> int:
                 logger.error(
                     'Config file does not exist! Please mount "/data" and place your "config.ini" file there. Alternatively, pass `--config-dir /directory/of/your/liking` as post arguments to store the config somewhere else.'
                 )
-                logger.error("See: https://github.com/mrusse/soularr/blob/main/config.ini for an example config file.")
+                logger.error("See: https://github.com/cryobry/seekarr/blob/main/config.ini for an example config file.")
             else:
                 logger.error(
                     "Config file does not exist! Please place it in the working directory. Alternatively, pass `--config-dir /directory/of/your/liking` as post arguments to store the config somewhere else."
                 )
-                logger.error("See: https://github.com/mrusse/soularr/blob/main/config.ini for an example config file.")
+                logger.error("See: https://github.com/cryobry/seekarr/blob/main/config.ini for an example config file.")
             return 0
 
         # Load the configuration into a structured object for easier access
@@ -1393,7 +1393,7 @@ def run_once(args) -> int:
                 logger.exception("Fatal error!")
                 return 0
             if failed == 0:
-                logger.info("Soularr finished.")
+                logger.info("Seekarr finished.")
                 if cfg.remove_completed_downloads:
                     slskd.transfers.remove_completed_downloads()
             else:
@@ -1431,7 +1431,7 @@ def main():
     global cfg, lidarr, slskd, logger, search_cache, folder_cache, broken_user
 
     # Allow some overrides to be passed to the script
-    parser = argparse.ArgumentParser(description="""Soularr reads all of your "wanted" albums/artists from Lidarr and downloads them using Slskd""")
+    parser = argparse.ArgumentParser(description="""Seekarr reads all of your "wanted" albums/artists from Lidarr and downloads them using Slskd""")
 
     default_data_directory = os.getcwd()
 

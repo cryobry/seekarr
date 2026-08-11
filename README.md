@@ -1,23 +1,15 @@
-![banner](https://raw.githubusercontent.com/mrusse/soularr/refs/heads/main/resources/banner.png)
+![banner](https://raw.githubusercontent.com/cryobry/seekarr/refs/heads/main/resources/banner.png)
 
-<h1 align="center">Soularr</h1>
+<h1 align="center">Seekarr</h1>
 <p align="center">
   A Python script that connects Lidarr with Soulseek!
 </p>
 
-<p align="center">
-  <a href="https://discord.gg/EznhgYBayN">
-    <img src="https://img.shields.io/discord/1292895470301220894?label=Discord&logo=discord&style=for-the-badge&cacheSeconds=60" alt="Join our Discord">
-  </a>
-</p>
-
 # About
 
-Soularr reads all of your "wanted" albums/artists from Lidarr and downloads them using Slskd. It uses the libraries: [pyarr](https://github.com/totaldebug/pyarr) and [slskd-api](https://github.com/bigoulours/slskd-python-api) to make this happen. View the demo below!
+Seekarr reads all of your "wanted" or "cutoff unmet" albums from Lidarr and downloads them using Slskd. It uses the libraries: [pyarr](https://github.com/totaldebug/pyarr) and [slskd-api](https://github.com/bigoulours/slskd-python-api) to make this happen.
 
-![Soularr_small](https://github.com/user-attachments/assets/15c47a82-ddf2-40e3-b143-2ad7f570730f)
-
-As downloads complete in Slskd the script will automatically tell Lidarr to import the files, making it a truly hands off process.
+As downloads complete in Slskd, Seekarr can automatically tell Lidarr to import the files, making it a truly hands-off process.
 
 # Setup
 
@@ -26,7 +18,7 @@ As downloads complete in Slskd the script will automatically tell Lidarr to impo
 **Lidarr**
 [https://lidarr.audio/](https://lidarr.audio/)
 
-Make sure Lidarr can see your Slskd download directory, if you are running Lidarr in a Docker container you may need to mount the directory. You will then need add it to your config (see "download_dir" under "Lidarr" in the example config).
+Make sure Lidarr can see your Slskd download directory. If you are running Lidarr in a Docker container you may need to mount the directory. You will then need to add it to your config (see "download_dir" under "Lidarr" in the example config).
 
 **Slskd**
 [https://github.com/slskd/slskd](https://github.com/slskd/slskd)
@@ -35,9 +27,9 @@ The script requires an api key from Slskd. Take a look at their [docs](https://g
 
 ## Docker
 
-The best way to run the script is through Docker. A Docker image is available through [ghcr.io](https://github.com/mrusse/soularr/pkgs/container/soularr) and [dockerhub](https://hub.docker.com/r/mrusse08/soularr).
+The best way to run the script is through Docker. A Docker image is available through [ghcr.io](https://github.com/cryobry/seekarr/pkgs/container/seekarr) and [dockerhub](https://hub.docker.com/r/cryobry/seekarr).
 
-Assuming, your user and group is `1000:1000` and that you have a directory structure similar to the following:
+Assuming your user and group is `1000:1000` and that you have a directory structure similar to the following:
 
 ```bash
 /
@@ -48,47 +40,42 @@ Assuming, your user and group is `1000:1000` and that you have a directory struc
 └── Containers
     ├── lidarr
     ├── slskd
-    └── soularr
+    └── seekarr
 ```
 
-Where `Downloads` could be any music download directory, `slskd_downloads` is your slskd download directory, and finally `Music` is the location for you music files then an example docker run command might be:
+Where `Downloads` could be any music download directory, `slskd_downloads` is your slskd download directory, and `Music` is the location for your music files, an example docker run command might be:
 
 ```shell
 docker run -d \
-  --name soularr \
+  --name seekarr \
   --restart unless-stopped \
-  --hostname soularr \
+  --hostname seekarr \
   -e TZ=ETC/UTC \
   -e SCRIPT_INTERVAL=300 \
-  -e WEBUI_ENABLED=true \
-  -p 8265:8265 \
-  -v /Media/slskd_downloads:/downloads \
-  -v /Containers/soularr:/data \
+  -v /media/slskd_downloads:/downloads \
+  -v /containers/seekarr:/data \
   --user 1000:1000 \
-  mrusse08/soularr:latest
+  cryobry/seekarr:latest
 ```
 
-Or you can also set it up with the provided [Docker Compose](https://github.com/mrusse/soularr/blob/main/docker-compose.yml).
+Or you can also set it up with the provided [Docker Compose](https://github.com/cryobry/seekarr/blob/main/docker-compose.yml).
 
 ```yml
 services:
-  soularr:
-    image: mrusse08/soularr:latest
-    container_name: soularr
-    hostname: soularr
+  seekarr:
+    image: cryobry/seekarr:latest
+    container_name: seekarr
+    hostname: seekarr
     user: 1000:1000 # this should be set to your UID and GID, which can be determined via `id -u` and `id -g`, respectively
     environment:
       - TZ=Etc/UTC
       - SCRIPT_INTERVAL=300 # Script interval in seconds
-      - WEBUI_ENABLED=true
-    ports:
-      - "8265:8265"
     volumes:
       # "You can set /downloads to whatever you want but will then need to change the Slskd download dir in your config file"
-      - /Media/slskd_downloads:/downloads
+      - /media/slskd_downloads:/downloads
       # Select where you are storing your config file.
-      # Leave "/data" since thats where the script expects the config file to be
-      - /Containers/soularr:/data
+      # Leave "/data" since that's where the script expects the config file to be
+      - /containers/seekarr:/data
     restart: unless-stopped
 ```
 
@@ -98,19 +85,19 @@ Note: You **must** edit both volumes in the docker compose above.
 
   - This is where you put your Slskd downloads path.
 
-  - You can point it to whatever dir you want but make sure to put the same dir in your config file under `[Slskd] -> download_dir`.
+  - You can point it to whatever dir you want, but make sure to put the same dir in your config file under `[Slskd] -> download_dir`.
 
-  - For example you could leave it as `/downloads` then in your config your entry would be `download_dir = /downloads`.
+  - For example, you could leave it as `/downloads`, then in your config your entry would be `download_dir = /downloads`.
 
 - `/path/to/config/dir:/data`
 
-  - This is where put the path you are storing your config file. It must point to `/data`.
+  - This is where you put the path to your config file. It must point to `/data`.
 
-You can also edit `SCRIPT_INTERVAL` to choose how often (in seconds) you want the script to run (default is every 300 seconds). Another thing to note is that by default the user is set to appropriate user on your system. If you wish to edit this change `user: 1000:1000` in the Docker compose to whatever you prefer. You can determine the user via the command `id -u` and the group vi `id -g`.
+You can also edit `SCRIPT_INTERVAL` to choose how often (in seconds) you want the script to run (default is every 300 seconds). By default, the user is set to the appropriate user on your system. If you wish to edit this, change `user: 1000:1000` in the Docker compose to whatever you prefer. You can determine the user via the command `id -u` and the group via `id -g`.
 
-It is important that `lidarr` and `slskd` agree on the user/group. If they do not agree then it is unlikely you will have successful imports. Also, it is important to note that lidarr will need access to the downloads directory of slskd.
+It is important that `lidarr` and `slskd` agree on the user/group. If they do not agree, it is unlikely you will have successful imports. Also, it is important to note that Lidarr will need access to the downloads directory of Slskd.
 
-For a more complete example see the compose file bellow which contains `lidarr`, `slskd`, and `soularr`:
+For a more complete example, see the compose file below, which contains `lidarr`, `slskd`, and `seekarr`:
 
 ```yml
 services:
@@ -123,8 +110,8 @@ services:
       - PUID=1000
       - PGID=1000
     volumes:
-      - /Containers/lidarr:/config
-      - /Media:/data
+      - /containers/lidarr:/config
+      - /media:/data
     ports:
       - "8686:8686"
     restart: unless-stopped
@@ -142,32 +129,29 @@ services:
       - "5031:5031"
       - "50300:50300"
     volumes:
-      - /Containers/slskd:/app
-      - /Media:/data
+      - /containers/slskd:/app
+      - /media:/data
     restart: unless-stopped
 
-  soularr:
-    image: mrusse08/soularr:latest
-    container_name: soularr
-    hostname: soularr
+  seekarr:
+    image: cryobry/seekarr:latest
+    container_name: seekarr
+    hostname: seekarr
     user: 1000:1000
     environment:
       - TZ=ETC/UTC
       - SCRIPT_INTERVAL=300
-      - WEBUI_ENABLED=true
-    ports:
-      - "8265:8265"
     volumes:
-      - /Media/slskd_downloads:/downloads
-      - /Container/soularr:/data
+      - /media/slskd_downloads:/downloads
+      - /container/seekarr:/data
     restart: unless-stopped
 ```
 
 ## Configure your config file
 
-The config file has a bunch of different settings that affect how the script runs. Any lists in the config such as "accepted_countries" need to be comma separated with no spaces (e.g. `","` not `" , "` or `" ,"`).
+The config file has a bunch of different settings that affect how the script runs. Any lists in the config, such as "accepted_countries", need to be comma separated with no spaces (e.g. `","` not `" , "` or `" ,"`).
 
-Given the directory structure above you can use the following configuration
+Given the directory structure above, you can use the following configuration:
 
 **Example config:**
 
@@ -179,9 +163,7 @@ api_key = yourlidarrapikeygoeshere
 host_url = http://lidarr:8686
 # Path to slskd downloads inside the Lidarr container
 download_dir = /data/slskd_downloads
-# If true, Lidarr won't auto-import from Slskd
-# Soularr tracks grabbed albums itself in memory in this mode, so they aren't
-# redownloaded on later loops within the same run. This is not persisted across restarts.
+# If true, Lidarr won't auto-import from Slskd and will skip grabbed albums
 disable_sync = False
 
 [Slskd]
@@ -192,7 +174,7 @@ host_url = http://slskd:5030
 url_base = /
 # Download path inside Slskd container
 download_dir = /downloads
-# Delete search after Soularr runs
+# Delete search after Seekarr runs
 delete_searches = False
 # Max seconds to wait for downloads (prevents infinite hangs)
 stalled_timeout = 3600
@@ -216,6 +198,7 @@ skip_region_check = False
 accepted_formats = CD,Digital Media,Vinyl
 
 [Search Settings]
+# Maximum time to let search run in milliseconds
 search_timeout = 5000
 maximum_peer_queue = 50
 # Minimum upload speed (bits/sec)
@@ -260,43 +243,21 @@ datefmt = %Y-%m-%dT%H:%M:%S%z
 # Enable logging to a file in addition to stdout
 log_to_file = True
 # Log filename (resolved relative to the data directory)
-log_file = soularr.log
+log_file = seekarr.log
 # Maximum log file size in bytes before rotation (default: 1MB)
 max_bytes = 1048576
 # Number of rotated log files to keep
 backup_count = 3
 ```
 
-[Full list of countries from Musicbrainz.](https://musicbrainz.org/doc/Release/Country)
+[Full list of countries from MusicBrainz.](https://musicbrainz.org/doc/Release/Country)
 
-[Full list of formats (also from Musicbrainz but for some reason they don't have a nice list)](https://pastebin.com/raw/pzGVUgaE)
+[Full list of formats (also from MusicBrainz, but for some reason they don't have a nice list)](https://pastebin.com/raw/pzGVUgaE)
 
-An [example config](https://github.com/mrusse/soularr/blob/main/config.ini) is included in the repo.
+An [example config](https://github.com/cryobry/seekarr/blob/main/config.ini) is included in the repo.
 
-## Web UI
 
-Soularr includes a built-in web interface accessible at `http://your-host:8265` with:
-- **Log viewer** — streams logs in real time
-- **Config editor** — view and edit your `config.ini` in the browser
-- **Failed Imports** — view and clear albums that previously failed to import into Lidarr
-
-The web UI is enabled by default in Docker. Make sure port `8265` is exposed in your compose file or `docker run` command (see the examples above).
-
-To disable it, set the environment variable:
-
-```yml
-- WEBUI_ENABLED=false
-```
-
-If you are running the container on a shared pod, and wish to change the port on which the web UI listens to, set the environment variable:
-
-```yml
-- WEBUI_PORT=18265
-```
-
-Thanks to [EricH9958](https://github.com/EricH9958/Soularr-Dashboard) for making the original dashboard for Soularr.
-
-## Running Manually
+## Running
 
 Install the requirements:
 
@@ -307,58 +268,11 @@ python -m pip install -r requirements.txt
 You can simply run the script with:
 
 ```bash
-python soularr.py
+python seekarr.py
 ```
 
-Note: the `config.ini` file needs to be in the same directory as `soularr.py`.
+Note: the `config.ini` file needs to be in the same directory as `seekarr.py`.
 
-To also start the web UI, run in a separate terminal:
-
-```bash
-python webui/webui.py
-```
-
-Then open `http://localhost:8265` in your browser. If your `config.ini` is not in the repo root, pass `--var-dir` to point to its directory:
-
-```bash
-python webui/webui.py --var-dir /path/to/your/config
-```
-
-### Scheduling the script
-
-Even if you are not using Docker you can still schedule the script. I have included an example bash script below that can be scheduled using a [cron job](https://crontab.guru/every-5-minutes).
-
-```bash
-#!/bin/bash
-cd /path/to/soularr/python/script
-
-dt=$(date '+%d/%m/%Y %H:%M:%S');
-echo "Starting Soularr! $dt"
-
-if ps aux | grep "[s]oularr.py" > /dev/null; then
-    echo "Soularr is already running. Exiting..."
-else
-    python soularr.py
-fi
-```
-
-**Example cron job setup:**
-
-Edit crontab file with
-
-```bash
-crontab -e
-```
-
-Then enter in your schedule followed by the command. For example:
-
-```cron
-*/5 * * * * /path/to/run.sh
-```
-
-This would run the bash script every 5 minutes.
-
-All of this is focused on Linux but the Python script runs fine on Windows as well. You can use things like the [Windows Task Scheduler](https://en.wikipedia.org/wiki/Windows_Task_Scheduler) to perform similar scheduling operations.
 
 ## Logging
 
@@ -379,29 +293,27 @@ formatted, see the comments in the `[Logging]` section from the [example config.
 
 ### Log to a File
 
-Soularr can write logs to a rotating file in addition to stdout. Enable it in your `config.ini`:
+Seekarr can write logs to a rotating file in addition to stdout. Enable it in your `config.ini`:
 
 ```ini
 [Logging]
 log_to_file = True
-log_file = soularr.log
+log_file = seekarr.log
 max_bytes = 1048576
 backup_count = 3
 ```
 
-The log file is written to the data directory (the same directory as `config.ini` when running locally, or `/data/` in Docker). When the file reaches `max_bytes` it is rotated, keeping up to `backup_count` old files (`soularr.log`, `soularr.log.1`, `soularr.log.2`, etc.).
+The log file is written to the data directory (the same directory as `config.ini` when running locally, or `/data/` in Docker). When the file reaches `max_bytes`, it is rotated, keeping up to `backup_count` old files (`seekarr.log`, `seekarr.log.1`, `seekarr.log.2`, etc.).
 
 ### Advanced Logging Usage
 
 For more information on the options available for logging, including more options for changing how messages are
 formatted, see the [Python logging documentation](https://docs.python.org/3/library/logging.html).
 
-**If you would like more advanced logging configuration options to be implemented** (such as configuring filters,
-formatters, handlers, additional streams, and multi-logger setups), consider submitting a feature request in
-[the official discord](https://discord.gg/EznhgYBayN) or [submitting an Issue in the GitHub repository itself](https://github.com/mrusse/soularr/issues).
+## Additional Info
 
-##
+Find Seekarr useful? [Paypal me a coffee!](https://paypal.me/bryanroessler)
 
-<p align="center">
-  <a href='https://ko-fi.com/mrusse' target='_blank'><img height='35' style='border:0px;height:46px;' src='https://az743702.vo.msecnd.net/cdn/kofi3.png?v=0' border='0' alt='Buy Me a Coffee at ko-fi.com' /></a>
-</p>
+[↓ ↓ ↓ Bitcoin ↓ ↓ ↓](bitcoin:bc1q7wy0kszjavgcrvkxdg7mf3s6rh506rasnhfa4a)
+
+[![Bitcoin](https://repos.bryanroessler.com/files/bc1q7wy0kszjavgcrvkxdg7mf3s6rh506rasnhfa4a.png)](bitcoin:bc1q7wy0kszjavgcrvkxdg7mf3s6rh506rasnhfa4a)

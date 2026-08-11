@@ -9,7 +9,6 @@ assignees: ''
 
 **Is your feature request related to a problem? Please describe.**
 
-**The issues page is not for troubleshooting! If you need troubleshooting help, please create a post in the Discussions tab or contact us in the Soularr Discord server: https://discord.gg/EznhgYBayN.**
 
 A clear and concise description of what the problem is. Ex. I'm always frustrated when [...]
 

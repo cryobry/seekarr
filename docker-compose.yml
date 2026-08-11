@@ -1,24 +1,19 @@
 version: "3"
 services:
-  soularr:
+  seekarr:
     restart: unless-stopped
-    container_name: soularr
-    hostname: soularr
+    container_name: seekarr
+    hostname: seekarr
     environment:
       - PUID=1000
       - PGID=1000
       - TZ=Etc/UTC
-      #Script interval in seconds
+      # Script interval in seconds
       - SCRIPT_INTERVAL=300
-      - WEBUI_ENABLED=true
-      - WEBUI_PORT=8265
     user: "1000:1000"
-    ports:
-      #Web UI port
-      - "8265:8265"
     volumes:
       #"You can set /downloads to whatever you want but will then need to change the Slskd download dir in your config file"
       - /path/to/slskd/downloads:/downloads
       #Select where you are storing your config file. Leave "/data" since thats where the script expects the config file to be
       - /path/to/config/dir:/data
-    image: mrusse08/soularr:latest
+    image: cryobry/seekarr:latest
