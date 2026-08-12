@@ -5,25 +5,27 @@
 
 ## About
 
-Seekarr reads the "wanted" and/or "cutoff unmet" album lists from Lidarr and downloads them using Slskd using the [pyarr](https://github.com/totaldebug/pyarr) and [slskd-api](https://github.com/bigoulours/slskd-python-api) libraries.
+Seekarr reads the "wanted" and/or "cutoff unmet" Lidarr album lists and downloads them with Slskd using the [pyarr](https://github.com/totaldebug/pyarr) and [slskd-api](https://github.com/bigoulours/slskd-python-api) Python libraries.
 
-As downloads complete in Slskd, Seekarr informs Lidarr to import the files. Alternatively, Seekarr can operate in various standalone modes using the settings in [`config.yml`](config.yml).
+As downloads complete in Slskd, Seekarr informs Lidarr to import the files. Alternatively, Seekarr can operate in various standalone modes using settings in [`config.yml`](config.yml).
 
 ## Setup
 
-### [Install Lidarr](https://lidarr.audio/)
+1. [Install Lidarr](https://lidarr.audio/)
 
-Make sure Lidarr can see your Slskd download directory. If you are running Lidarr in a container you may need to mount the directory. You will then need to add it to your config (see `lidarr.download_dir` in the [example config](config.yml)).
+    - Specify your `lidarr.api_key`, `lidarr.host_url`, and `lidarr.download_dir` in [config.yml](config.yml).
+    - Ensure Lidarr can see your `slskd.download_dir`. If you are running Lidarr in a container you may need to mount the directory.
 
-### [Install Slskd](https://github.com/slskd/slskd)
+2. [Install Slskd](https://github.com/slskd/slskd)
 
-Seekarr requires an [api key from Slskd](https://github.com/slskd/slskd/blob/master/docs/config.md#authentication) added to the the yml file under `web, authentication, api_keys, my_api_key`).
+    - Specify your `slskd.host_url`, [`slskd.api_key`](https://github.com/slskd/slskd/blob/master/docs/config.md#authentication) and `slskd.download_dir` in [config.yml](config.yml).
+    - Ensure Slskd can see your `slskd.download_dir`. If you are running Lidarr in a container you may need to mount the directory.
 
 ---
 
 ### Podman/Docker (recommended)
 
-Container images are available via [ghcr.io](https://github.com/cryobry/seekarr/pkgs/container/seekarr) and [docker.io](https://hub.docker.com/r/cryobry/seekarr).
+Soularr container images are available via [ghcr.io](https://github.com/cryobry/seekarr/pkgs/container/seekarr) and [docker.io](https://hub.docker.com/r/cryobry/seekarr).
 
 ```shell
 podman run -d \
@@ -84,8 +86,6 @@ services:
     hostname: lidarr
     environment:
       - TZ=ETC/UTC
-      - PUID=1000
-      - PGID=1000
     volumes:
       - /containers/lidarr:/config
       - /media:/data
@@ -97,7 +97,6 @@ services:
     image: slskd/slskd
     container_name: slskd
     hostname: slskd
-    user: 1000:1000
     environment:
       - TZ=ETC/UTC
       - SLSKD_REMOTE_CONFIGURATION=true
@@ -114,7 +113,6 @@ services:
     image: cryobry/seekarr:latest
     container_name: seekarr
     hostname: seekarr
-    user: 1000:1000
     environment:
       - TZ=ETC/UTC
       - SCRIPT_INTERVAL=300
@@ -124,13 +122,9 @@ services:
     restart: unless-stopped
 ```
 
-## Configure `config.yml`
+## Configure [`config.yml`](config.yml)
 
-The `lidarr.sources` key lists which wanted lists to process, and in what order (e.g. `missing`, `cutoff_unmet`).
-The `missing:` and `cutoff_unmet:` blocks override the top-level `lidarr:` and `slskd:` defaults using nested schemas.
-Useful if, say, you want to accept Vinyl releases for missing albums but only CD/Digital for cutoff-unmet upgrades.
-
-**Example [config.yml](config.yml):**
+### Example
 
 ```yaml
 # Defaults for both "missing" and "cutoff_unmet" lists
@@ -292,13 +286,22 @@ logging:
   backup_count: 3
 ```
 
+### Specify which Lidarr wanted lists to search using `lidarr.sources`
+
+Te `lidarr.sources` list specifies which Lidarr wanted lists to process, and in what order (e.g. `missing`, `cutoff_unmet`).
+
+### Specific wanted list overrides
+
+The nested blocks in `missing:` and `cutoff_unmet:` override the top-level `lidarr:` and `slskd:` defaults.
+Useful if, say, you want to accept Vinyl releases for missing albums but only CD/Digital for cutoff-unmet upgrades.
+
 List of [countries](https://musicbrainz.org/doc/Release/Country) and [formats](https://pastebin.com/raw/pzGVUgaE) from MusicBrainz.
 
 ### Environment Variable Overrides
 
 Env vars always take priority over `config.yml`, including per-source (`missing:`/`cutoff_unmet:`) overrides.
 
-Any `lidarr:`/`slskd:` setting can be overridden with an env var named after its YAML key, uppercased
+Any `lidarr:`/`slskd:` setting can be overridden with an env var named after its YAML key, underscored and uppercased
 and prefixed with the section (similar to Slskd):
 
 - `lidarr.api_key` -> `LIDARR_API_KEY`
@@ -308,7 +311,7 @@ This is handy for keeping secrets like API keys out of `config.yml` (e.g. via Do
 
 List values are comma-separated (e.g. `LIDARR_ACCEPTED_FORMATS=CD,Digital Media,Vinyl`).
 
-## Running
+## Running Seekarr
 
 ```bash
 python -m pip install -r requirements.txt
@@ -371,10 +374,7 @@ logging:
 
 The log file is written to the data directory (the same directory as `config.yml` when running locally, or `/data/` in Docker). When the file reaches `max_bytes`, it is rotated, keeping up to `backup_count` old files (`seekarr.log`, `seekarr.log.1`, `seekarr.log.2`, etc.).
 
-### Advanced Logging Usage
-
-For more information on the options available for logging, including more options for changing how messages are
-formatted, see the [Python logging documentation](https://docs.python.org/3/library/logging.html).
+See the [Python logging documentation](https://docs.python.org/3/library/logging.html) for advanced logging usage.
 
 ## Additional Info
 
