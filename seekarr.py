@@ -209,13 +209,13 @@ class AppConfig:
             failed_import_denylist_file_path=os.path.join(args.var_dir, "failed_imports.json"),
         )
 
-# === API Clients & Logging ===
+# ===== API Clients & Logging =====
 lidarr: LidarrAPI = None  # type: ignore[assignment]
 slskd: slskd_api.SlskdClient = None  # type: ignore[assignment]
 logger = logging.getLogger("seekarr")
 cfg: AppConfig = None  # type: ignore[assignment]
 
-# === Runtime State & Caches ===
+# ===== Runtime State & Caches =====
 search_cache: dict = {}
 folder_cache: dict = {}
 broken_user: list = []
@@ -513,6 +513,9 @@ def check_for_match(tracks, allowed_filetype, file_dirs, username):
                 broken_user.append(username)
                 logger.debug(f"Updated broken users {broken_user}")
                 return False, {}, ""
+            except IndexError:
+                logger.warning(f'Empty directory response from user "{username}" for folder "{file_dir}"')
+                directory = {"files": []}
             except RequestException:
                 logger.exception(f'Network error getting directory from user: "{username}"')
                 return False, {}, ""
