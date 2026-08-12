@@ -1,0 +1,20 @@
+# systemd container quadlet
+[Unit]
+Description=seekarr container
+Requires=podman.socket
+After=podman.socket
+
+[Container]
+ContainerName=seekarr
+Image=docker.io/cryobry/seekarr:latest
+Pull=newer
+Volume=%h/.config/seekarr:/data:Z
+Volume=%h/downloads/htpc:/downloads:z
+Environment=SCRIPT_INTERVAL=300
+Environment=TZ=UTC
+
+[Service]
+Restart=on-failure
+
+[Install]
+WantedBy=default.target

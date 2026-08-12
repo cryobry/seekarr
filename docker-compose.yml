@@ -5,9 +5,7 @@ services:
     container_name: seekarr
     hostname: seekarr
     environment:
-      - PUID=1000
-      - PGID=1000
-      - TZ=Etc/UTC
+      - TZ=UTC
       # Script interval in seconds
       - SCRIPT_INTERVAL=300
     user: "1000:1000"
@@ -16,4 +14,4 @@ services:
       - /path/to/slskd/downloads:/downloads
       # /data is where the script/container expects the config file to be by default unless --config-dir is set.
       - /path/to/config/dir:/data
-    image: cryobry/seekarr:latest
+    image: docker.io/cryobry/seekarr:latest
