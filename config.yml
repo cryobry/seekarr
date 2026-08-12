@@ -40,7 +40,7 @@ lidarr:
     - Canada
   # Don't check the region of the release
   skip_region_check: False
-  # If true, Lidarr won't auto-import from Slskd and Seekarr will skip grabbed albums
+  # If true, Lidarr won't auto-import from Slskd and Soulseekarr will skip grabbed albums
   disable_sync: False
   # Skip re-downloading albums that previously failed to import into Lidarr
   failed_import_denylist: True
@@ -73,7 +73,7 @@ slskd:
   minimum_filename_match_ratio: 0.8
   # Minimum time (seconds) between searches. Set to 0 to disable.
   minimum_search_interval: 5
-  # Delete search after Seekarr runs
+  # Delete search after Soulseekarr runs
   delete_searches: False
   # Max seconds to wait for downloads
   stalled_timeout: 7200
@@ -150,7 +150,7 @@ logging:
   # Enable logging to a file in addition to stdout
   log_to_file: True
   # Log filename (resolved relative to the data directory)
-  log_file: seekarr.log
+  log_file: soulseekarr.log
   # Maximum log file size in bytes before rotation (default: 1MB)
   max_bytes: 1048576
   # Number of rotated log files to keep

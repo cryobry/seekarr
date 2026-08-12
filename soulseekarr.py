@@ -75,7 +75,7 @@ def require_config_value(value, name: str):
     return value
 
 
-# Allows backwards compatibility for users updating an older version of Seekarr
+# Allows backwards compatibility for users updating an older version of Soulseekarr
 # without using the new "logging" section in the config.yml file.
 DEFAULT_LOGGING_CONF = {
     "level": "INFO",
@@ -203,7 +203,7 @@ class AppConfig:
         return cls(
             lidarr=lidarr,
             slskd=slskd,
-            lock_file_path=os.path.join(args.var_dir, ".seekarr.lock"),
+            lock_file_path=os.path.join(args.var_dir, ".soulseekarr.lock"),
             config_file_path=os.path.join(args.config_dir, "config.yml"),
             current_page_file_path=os.path.join(args.var_dir, ".current_page.txt"),
             failed_import_denylist_file_path=os.path.join(args.var_dir, "failed_imports.json"),
@@ -212,7 +212,7 @@ class AppConfig:
 # ===== API Clients & Logging =====
 lidarr: LidarrAPI = None  # type: ignore[assignment]
 slskd: slskd_api.SlskdClient = None  # type: ignore[assignment]
-logger = logging.getLogger("seekarr")
+logger = logging.getLogger("soulseekarr")
 cfg: AppConfig = None  # type: ignore[assignment]
 
 # ===== Runtime State & Caches =====
@@ -225,15 +225,13 @@ broken_user: list = []
 grabbed_albums: set = set()
 
 
-def album_match(lidarr_tracks, slskd_tracks, username, filetype):
+def album_match(lidarr_tracks, slskd_tracks, username, filetype, album_name):
     counted = []
     total_match = 0.0
-
-    lidarr_album = lidarr.get_album(lidarr_tracks[0]["albumId"])
-    lidarr_album_name = lidarr_album["title"]
+    filetype_ext = filetype.split(" ")[0]
 
     for lidarr_track in lidarr_tracks:
-        lidarr_filename = lidarr_track["title"] + "." + filetype.split(" ")[0]
+        lidarr_filename = lidarr_track["title"] + "." + filetype_ext
         best_match = 0.0
 
         for slskd_track in slskd_tracks:
@@ -248,16 +246,21 @@ def album_match(lidarr_tracks, slskd_tracks, username, filetype):
             ratio = check_ratio("_", ratio, lidarr_filename, slskd_filename)
 
             # Same checks but preappend album name.
-            ratio = check_ratio("", ratio, lidarr_album_name + " " + lidarr_filename, slskd_filename)
-            ratio = check_ratio(" ", ratio, lidarr_album_name + " " + lidarr_filename, slskd_filename)
-            ratio = check_ratio("_", ratio, lidarr_album_name + " " + lidarr_filename, slskd_filename)
+            ratio = check_ratio("", ratio, album_name + " " + lidarr_filename, slskd_filename)
+            ratio = check_ratio(" ", ratio, album_name + " " + lidarr_filename, slskd_filename)
+            ratio = check_ratio("_", ratio, album_name + " " + lidarr_filename, slskd_filename)
 
             if ratio > best_match:
                 best_match = ratio
+                if best_match == 1.0:  # Can't do better than a perfect match
+                    break
 
         if best_match > cfg.slskd.minimum_match_ratio:
             counted.append(lidarr_filename)
             total_match += best_match
+
+    if not counted:
+        return False
 
     if len(counted) == len(lidarr_tracks) and username not in cfg.slskd.ignored_users:
         logger.info(f"Found match from user: {username} for {len(counted)} tracks! Track attributes: {filetype}")
@@ -475,7 +478,7 @@ def download_filter(allowed_filetype, directory):
     return directory  # If we didn't find unwanted files or we aren't filtering just return the original list
 
 
-def check_for_match(tracks, allowed_filetype, file_dirs, username):
+def check_for_match(tracks, allowed_filetype, file_dirs, username, album_name):
     """
     Does the actual match checking on a single disk/album.
     """
@@ -531,7 +534,7 @@ def check_for_match(tracks, allowed_filetype, file_dirs, username):
         tracks_info = album_track_num(directory)
 
         if tracks_info["count"] == track_num and tracks_info["filetype"] != "":
-            if album_match(tracks, directory["files"], username, allowed_filetype):
+            if album_match(tracks, directory["files"], username, allowed_filetype, album_name):
                 return True, directory, file_dir
             else:
                 continue
@@ -765,7 +768,7 @@ def try_enqueue(all_tracks, results, allowed_filetype, artist_name, album_name):
             continue
         logger.debug(f"Parsing result from user: {username}")
         file_dirs = results[username][allowed_filetype]
-        found, directory, file_dir = check_for_match(all_tracks, allowed_filetype, file_dirs, username)
+        found, directory, file_dir = check_for_match(all_tracks, allowed_filetype, file_dirs, username, album_name)
         if found:
             directory = download_filter(allowed_filetype, directory)
             for i in range(0, len(directory["files"])):
@@ -807,7 +810,7 @@ def try_multi_enqueue(release, all_tracks, results, allowed_filetype, artist_nam
             if allowed_filetype not in results[username]:
                 continue
             file_dirs = results[username][allowed_filetype]
-            found, directory, file_dir = check_for_match(disk["tracks"], allowed_filetype, file_dirs, username)
+            found, directory, file_dir = check_for_match(disk["tracks"], allowed_filetype, file_dirs, username, album_name)
             if found:
                 directory = download_filter(allowed_filetype, directory)
                 disk["source"] = (username, directory, file_dir)
@@ -1220,7 +1223,7 @@ def is_docker():
 def migrate_soularr_ini_config(config_dir: str) -> bool:
     """
     One-time migration for users coming from Soularr: if config.yml is missing but a Soularr
-    config.ini is present, translate it into a new config.yml (mapped to Seekarr's schema) so
+    config.ini is present, translate it into a new config.yml (mapped to Soulseekarr's schema) so
     the run can proceed without manual reconfiguration. Returns True if a config.yml was written.
     """
     ini_path = os.path.join(config_dir, "config.ini")
@@ -1275,7 +1278,7 @@ def migrate_soularr_ini_config(config_dir: str) -> bool:
             "host_url": get("Slskd", "host_url"),
             "url_base": get("Slskd", "url_base", "/"),
             "download_dir": get("Slskd", "download_dir"),
-            # Soularr's search_timeout is milliseconds; Seekarr's timeout is seconds.
+            # Soularr's search_timeout is milliseconds; Soulseekarr's timeout is seconds.
             "timeout": max(1, get_int("Search Settings", "search_timeout", 5000) // 1000),
             "maximum_peer_queue": get_int("Search Settings", "maximum_peer_queue", 50),
             "minimum_peer_upload_speed": get_int("Search Settings", "minimum_peer_upload_speed", 0),
@@ -1298,7 +1301,7 @@ def migrate_soularr_ini_config(config_dir: str) -> bool:
             "format": get("Logging", "format", DEFAULT_LOGGING_CONF["format"]),
             "datefmt": get("Logging", "datefmt", DEFAULT_LOGGING_CONF["datefmt"]),
             "log_to_file": get_bool("Logging", "log_to_file", True),
-            "log_file": get("Logging", "log_file", "seekarr.log"),
+            "log_file": get("Logging", "log_file", "soulseekarr.log"),
             "max_bytes": get_int("Logging", "max_bytes", 1048576),
             "backup_count": get_int("Logging", "backup_count", 3),
         },
@@ -1311,7 +1314,7 @@ def migrate_soularr_ini_config(config_dir: str) -> bool:
             return super().increase_indent(flow=flow, indentless=False)
 
     with open(yaml_path, "w") as yaml_file:
-        yaml_file.write("# Auto-generated from config.ini by Seekarr's Soularr migration. Review the mapped values below.\n")
+        yaml_file.write("# Auto-generated from config.ini by Soulseekarr's Soularr migration. Review the mapped values below.\n")
         yaml.dump(new_config, yaml_file, Dumper=IndentedListDumper, sort_keys=False, default_flow_style=False)
 
     # Use warning level so this is visible even though logging isn't configured from config.yml yet.
@@ -1345,7 +1348,7 @@ def setup_logging(config: dict, var_dir: str) -> None:
 
     log_to_file = bool(log_config.get("log_to_file", True))
     if log_to_file:
-        log_filename = log_config.get("log_file", "seekarr.log")
+        log_filename = log_config.get("log_file", "soulseekarr.log")
         log_file_path = os.path.join(var_dir, log_filename)
         max_bytes = int(log_config.get("max_bytes", 1048576))
         backup_count = int(log_config.get("backup_count", 3))
@@ -1511,14 +1514,14 @@ def add_to_failed_import_denylist(file_path, album_id, artist, title, folder_pat
 
 
 def run_once(args) -> int:
-    """Runs a single Seekarr cycle: fetch wanted albums, search, download, and import. Returns a process exit code."""
+    """Runs a single Soulseekarr cycle: fetch wanted albums, search, download, and import. Returns a process exit code."""
     global cfg, lidarr, slskd, search_cache, folder_cache, broken_user
 
-    lock_file_path = os.path.join(args.var_dir, ".seekarr.lock")
+    lock_file_path = os.path.join(args.var_dir, ".soulseekarr.lock")
     config_file_path = os.path.join(args.config_dir, "config.yml")
 
     if not is_docker() and os.path.exists(lock_file_path) and args.lock_file:
-        logger.info(f"Seekarr instance is already running.")
+        logger.info(f"Soulseekarr instance is already running.")
         return 1
 
     try:
@@ -1539,12 +1542,12 @@ def run_once(args) -> int:
                 logger.error(
                     'Config file does not exist! Please mount "/data" and place your "config.yml" file there. Alternatively, pass `--config-dir /directory/of/your/liking` as post arguments to store the config somewhere else.'
                 )
-                logger.error("See: https://github.com/cryobry/seekarr/blob/main/config.yml for an example config file.")
+                logger.error("See: https://github.com/cryobry/soulseekarr/blob/main/config.yml for an example config file.")
             else:
                 logger.error(
                     "Config file does not exist! Please place it in the working directory. Alternatively, pass `--config-dir /directory/of/your/liking` as post arguments to store the config somewhere else."
                 )
-                logger.error("See: https://github.com/cryobry/seekarr/blob/main/config.yml for an example config file.")
+                logger.error("See: https://github.com/cryobry/soulseekarr/blob/main/config.yml for an example config file.")
             return 0
 
         # Load the configuration into a structured object for easier access
@@ -1590,7 +1593,7 @@ def run_once(args) -> int:
 
         if any_records:
             if total_failed == 0:
-                logger.info("Seekarr finished.")
+                logger.info("Soulseekarr finished.")
             else:
                 logger.info(f"{total_failed}: releases failed to find a match in the search results and are still wanted.")
             if cfg.slskd.remove_completed_downloads:
@@ -1626,7 +1629,7 @@ def main():
     global cfg, lidarr, slskd, logger, search_cache, folder_cache, broken_user
 
     # Allow some overrides to be passed to the script
-    parser = argparse.ArgumentParser(description="""Seekarr reads all of your "wanted" albums/artists from Lidarr and downloads them using Slskd""")
+    parser = argparse.ArgumentParser(description="""Soulseekarr reads all of your "wanted" albums/artists from Lidarr and downloads them using Slskd""")
 
     default_data_directory = os.getcwd()
 

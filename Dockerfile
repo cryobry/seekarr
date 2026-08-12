@@ -2,7 +2,7 @@ FROM python:3.14
 
 WORKDIR /app
 
-COPY requirements.txt seekarr.py ./
+COPY requirements.txt soulseekarr.py ./
 COPY resources/ resources/
 
 RUN apt-get update \
@@ -13,4 +13,4 @@ RUN apt-get update \
 ENV PYTHONUNBUFFERED=1
 ENV IN_DOCKER=Yes
 
-ENTRYPOINT ["tini", "-g", "--", "python", "-u", "/app/seekarr.py"]
+ENTRYPOINT ["tini", "-g", "--", "python", "-u", "/app/soulseekarr.py"]

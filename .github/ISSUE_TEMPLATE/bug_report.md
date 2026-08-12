@@ -1,6 +1,6 @@
 ---
 name: Bug report
-about: Create a bug report to help us improve Seekarr (do not use for troubleshooting).
+about: Create a bug report to help us improve Soulseekarr (do not use for troubleshooting).
 title: "[BUG] "
 labels: ''
 assignees: ''

@@ -1,15 +1,12 @@
-
-# Seekarr
+# Soulseekarr
 
 ![banner](resources/banner.png)
 
 ## About
 
-Seekarr reads the "Wanted" and/or "Cutoff Unmet" Lidarr album lists and downloads them with Slskd using [pyarr](https://github.com/totaldebug/pyarr) and [slskd-api](https://github.com/bigoulours/slskd-python-api).
+Soulseekarr reads the "Wanted" and/or "Cutoff Unmet" Lidarr album lists and downloads them with Slskd using [pyarr](https://github.com/totaldebug/pyarr) and [slskd-api](https://github.com/bigoulours/slskd-python-api).
 
-As downloads complete in Slskd, Seekarr informs Lidarr to import the files. Alternatively, Seekarr can operate in various standalone modes using settings in [`config.yml`](config.yml).
-
-Seekarr is a great way to acquire obscure public domain recordings.
+As downloads complete in Slskd, Soulseekarr informs Lidarr to import the files. Alternatively, Soulseekarr can operate in various standalone modes using settings in [`config.yml`](config.yml).
 
 ## Prerequisites
 
@@ -25,9 +22,9 @@ Seekarr is a great way to acquire obscure public domain recordings.
 
 ## Configure [`config.yml`](config.yml)
 
-Create the following `config.yml` file in the directory you will mount as `/data` in the container, typically `$HOME/.config/seekarr/config.yml`.
+Create the following `config.yml` file in the directory you will mount as `/data` in the container, typically `$HOME/.config/soulseekarr/config.yml`.
 
-Note: Seekarr will convert an existing Soularr-style `config.ini` to `config.yml` if no `config.yml` is found.
+Note: Soulseekarr will convert an existing Soularr-style `config.ini` to `config.yml` if no `config.yml` is found.
 
 ```yaml
 # Defaults for both "missing" and "cutoff_unmet" lists
@@ -72,7 +69,7 @@ lidarr:
     - Canada
   # Don't check the region of the release
   skip_region_check: False
-  # If true, Lidarr won't auto-import from Slskd and Seekarr will skip grabbed albums
+  # If true, Lidarr won't auto-import from Slskd and Soulseekarr will skip grabbed albums
   disable_sync: False
   # Skip re-downloading albums that previously failed to import into Lidarr
   failed_import_denylist: True
@@ -105,7 +102,7 @@ slskd:
   minimum_filename_match_ratio: 0.8
   # Minimum time (seconds) between searches. Set to 0 to disable.
   minimum_search_interval: 5
-  # Delete search after Seekarr runs
+  # Delete search after Soulseekarr runs
   delete_searches: False
   # Max seconds to wait for downloads
   stalled_timeout: 7200
@@ -181,7 +178,7 @@ logging:
   # Enable logging to a file in addition to stdout
   log_to_file: True
   # Log filename (resolved relative to the data directory)
-  log_file: seekarr.log
+  log_file: soulseekarr.log
   # Maximum log file size in bytes before rotation (default: 1MB)
   max_bytes: 1048576
   # Number of rotated log files to keep
@@ -211,49 +208,49 @@ This is handy for keeping secrets like API keys out of `config.yml` (e.g. via Do
 
 Lists in env vars are comma-separated (e.g. `LIDARR_ACCEPTED_FORMATS=CD,Digital Media,Vinyl`).
 
-## Running Seekarr
+## Running Soulseekarr
 
 ### CLI
 
 ```bash
 python -m pip install -r requirements.txt
-python seekarr.py [OPTION...]
+python soulseekarr.py [OPTION...]
 ```
 
-Note: `seekarr.py` expects `config.yml` to be in the same directory unless `--config-dir` is specified.
+Note: `soulseekarr.py` expects `config.yml` to be in the same directory unless `--config-dir` is specified.
 
 ---
 
 ### Podman/Docker
 
-Soularr container images are available via [ghcr.io](https://github.com/cryobry/seekarr/pkgs/container/seekarr) and [docker.io](https://hub.docker.com/r/cryobry/seekarr).
+Soulseekarr container images are available via [ghcr.io](https://github.com/cryobry/soulseekarr/pkgs/container/soulseekarr) and [docker.io](https://hub.docker.com/r/cryobry/soulseekarr).
 
 ```shell
 podman run -d \
-  --name seekarr \
+  --name soulseekarr \
   --restart unless-stopped \
-  --hostname seekarr \
+  --hostname soulseekarr \
   -e TZ=UTC \
   -v /media/slskd_downloads:/downloads \
-  -v /containers/seekarr:/data \
-  docker.io/cryobry/seekarr:latest [OPTION...] [CMD...]
+  -v /containers/soulseekarr:/data \
+  docker.io/cryobry/soulseekarr:latest [OPTION...] [CMD...]
 ```
 
 ---
 
-### [Quadlet](seekarr.container) (recommended)
+### [Quadlet](soulseekarr.container) (recommended)
 
 ```ini
 [Unit]
-Description=seekarr container
+Description=soulseekarr container
 Requires=podman.socket
 After=podman.socket
 
 [Container]
-ContainerName=seekarr
-Image=docker.io/cryobry/seekarr:latest
+ContainerName=soulseekarr
+Image=docker.io/cryobry/soulseekarr:latest
 Pull=newer
-Volume=%h/.config/seekarr:/data:Z
+Volume=%h/.config/soulseekarr:/data:Z
 Volume=%h/downloads/htpc:/downloads:z
 Environment=SCRIPT_INTERVAL=5
 Environment=TZ=America/New_York
@@ -266,18 +263,18 @@ WantedBy=default.target
 
 ```
 
-#### Run Seekarr as a rootless container user service using quadlet
+#### Run Soulseekarr as a rootless container user service using quadlet
 
 ```bash
 mkdir -p ~/.config/containers/systemd
-cp seekarr.container ~/.config/containers/systemd/
+cp soulseekarr.container ~/.config/containers/systemd/
 systemctl --user daemon-reload
-systemctl --user enable --now seekarr.service
+systemctl --user enable --now soulseekarr.service
 ```
 
 ---
 
-### [Compose](docker-compose.yml) (`lidarr`, `slskd`, and `seekarr`)
+### [Compose](docker-compose.yml) (`lidarr`, `slskd`, and `soulseekarr`)
 
 ```yml
 services:
@@ -310,23 +307,23 @@ services:
       - /media:/data
     restart: unless-stopped
 
-  seekarr:
-    image: cryobry/seekarr:latest
-    container_name: seekarr
-    hostname: seekarr
+  soulseekarr:
+    image: cryobry/soulseekarr:latest
+    container_name: soulseekarr
+    hostname: soulseekarr
     environment:
       - TZ=ETC/UTC
       - SCRIPT_INTERVAL=300
     volumes:
       - /media/slskd_downloads:/downloads
-      - /container/seekarr:/data
+      - /container/soulseekarr:/data
     restart: unless-stopped
 ```
 
 ### Command-line options
 
-The following runtime options can be passed directly to `seekarr.py` or the container,
-and control where Seekarr runs and how often it checks for wanted releases.
+The following runtime options can be passed directly to `soulseekarr.py` or the container,
+and control where Soulseekarr runs and how often it checks for wanted releases.
 
 | Option | Description | Default |
 | --- | --- | --- |
@@ -339,7 +336,7 @@ The `--config-dir` and `--var-dir` options accept an optional path. When supplie
 their default directory. For example:
 
 ```bash
-python seekarr.py --config-dir /etc/seekarr --var-dir /var/lib/seekarr --interval 300
+python soulseekarr.py --config-dir /etc/soulseekarr --var-dir /var/lib/soulseekarr --interval 300
 ```
 
 `--interval` takes precedence over the `SCRIPT_INTERVAL` environment variable. These runtime options take
@@ -360,24 +357,24 @@ logging:
 
 ### Log to a File
 
-Seekarr can write logs to a rotating file in addition to stdout. Enable it in your `config.yml`:
+Soulseekarr can write logs to a rotating file in addition to stdout. Enable it in your `config.yml`:
 
 ```yaml
 logging:
   log_to_file: True
-  log_file: seekarr.log
+  log_file: soulseekarr.log
   max_bytes: 1048576
   backup_count: 3
 ```
 
 The log file is written to the data directory (the same directory as `config.yml` when running locally, or `/data/` in Docker).
-When the file reaches `max_bytes`, it is rotated, keeping up to `backup_count` old files (`seekarr.log`, `seekarr.log.1`, `seekarr.log.2`, etc.).
+When the file reaches `max_bytes`, it is rotated, keeping up to `backup_count` old files (`soulseekarr.log`, `soulseekarr.log.1`, `soulseekarr.log.2`, etc.).
 
 See the [Python logging documentation](https://docs.python.org/3/library/logging.html) for advanced logging usage.
 
 ## Additional Info
 
-Find Seekarr useful? [Paypal me a coffee!](https://paypal.me/bryanroessler)
+Find Soulseekarr useful? [Paypal me a coffee!](https://paypal.me/bryanroessler)
 
 [↓ ↓ ↓ Bitcoin ↓ ↓ ↓](bitcoin:bc1q7wy0kszjavgcrvkxdg7mf3s6rh506rasnhfa4a)
 

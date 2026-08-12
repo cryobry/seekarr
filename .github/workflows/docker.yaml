@@ -6,14 +6,14 @@ on:
     branches:
       - '**'
     paths:
-      - 'seekarr.py'
+      - 'soulseekarr.py'
     tags:
       - 'v*'
   pull_request:
     branches:
       - 'main'
     paths:
-      - 'seekarr.py'
+      - 'soulseekarr.py'
 
 jobs:
   docker:
@@ -64,7 +64,7 @@ jobs:
           else
             echo "tag=${GITHUB_REF_NAME}" >> $GITHUB_OUTPUT
           fi
-          echo "dockerhub_image=${{ secrets.DOCKERHUB_USERNAME }}/seekarr" >> $GITHUB_OUTPUT
+          echo "dockerhub_image=${{ secrets.DOCKERHUB_USERNAME }}/soulseekarr" >> $GITHUB_OUTPUT
           
       - name: Build and push
         uses: docker/build-push-action@v7
