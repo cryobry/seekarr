@@ -857,17 +857,28 @@ def find_download(album, grab_list):
     album_name = album["title"]
     artist_id = album["artistId"]
     results = search_cache[album_id]
+
+    # Releases/tracks don't change per quality, so fetch them once and reuse across the
+    # allowed_filetypes loop below instead of hitting the Lidarr API for every quality.
+    releases = lidarr.get_album(album_id)["releases"]
+    tracks_by_release: dict = {}
+
     for allowed_filetype in cfg.slskd.allowed_filetypes:
+        if not any(allowed_filetype in results[username] for username in results):
+            logger.debug(f"No search results for Quality: {allowed_filetype}. Skipping.")
+            continue
+
         logger.info(f"Checking for Quality: {allowed_filetype}")
-        releases = lidarr.get_album(album_id)["releases"]
-        num_releases = len(releases)
-        for _ in range(0, num_releases):
-            if len(releases) == 0:
+        remaining_releases = list(releases)
+        for _ in range(0, len(remaining_releases)):
+            if len(remaining_releases) == 0:
                 break
-            release = choose_release(artist_name, releases)
-            releases.remove(release)
+            release = choose_release(artist_name, remaining_releases)
+            remaining_releases.remove(release)
             release_id = release["id"]
-            all_tracks = lidarr.get_tracks(artistId=artist_id, albumId=album_id, albumReleaseId=release_id)
+            if release_id not in tracks_by_release:
+                tracks_by_release[release_id] = lidarr.get_tracks(artistId=artist_id, albumId=album_id, albumReleaseId=release_id)
+            all_tracks = tracks_by_release[release_id]
             found, downloads = try_enqueue(all_tracks, results, allowed_filetype, artist_name, album_name)
 
             if not found and len(release["media"]) > 1:
