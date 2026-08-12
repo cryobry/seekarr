@@ -32,15 +32,15 @@ Note: Seekarr will convert an existing Soularr-style `config.ini` to `config.yml
 ```yaml
 # Defaults for both "missing" and "cutoff_unmet" lists
 lidarr:
-  # === API SETTINGS ===
+  # ===== API SETTINGS =====
   # Get from Lidarr: Settings > General > Security
   api_key: yourlidarrapikeygoeshere
-  # URL Lidarr uses (e.g., what you use in your browser)
+  # URL Lidarr uses (i.e. what you use in your browser)
   host_url: http://lidarr:8686
   # Path to slskd downloads inside the Lidarr container
   download_dir: /data/slskd_downloads
 
-  # === SEARCH SETTINGS ===
+  # ===== SEARCH SETTINGS =====
   # Which Lidarr wanted lists to pull from, and in what order
   sources:
     - missing
@@ -84,7 +84,7 @@ lidarr:
 
 # Defaults for both "missing" and "cutoff_unmet" lists
 slskd:
-  # === API SETTINGS ===
+  # ===== API SETTINGS =====
   # Create manually (see docs)
   api_key: yourslskdapikeygoeshere
   # URL Slskd uses
@@ -94,7 +94,7 @@ slskd:
   # Download path inside Slskd container
   download_dir: /downloads
 
-  # === SEARCH SETTINGS ===
+  # ===== SEARCH SETTINGS =====
   # Search timeout in seconds
   timeout: 10
   # Maximum number of peers allowed in the user's queue
@@ -174,8 +174,7 @@ cutoff_unmet:
       - flac
 
 logging:
-  # Passed to Python's logging.basicConfig()
-  # See: https://docs.python.org/3/library/logging.html
+  # Passed to logging.basicConfig() (see: https://docs.python.org/3/library/logging.html)
   level: INFO
   format: "[%(levelname)s|%(module)s|L%(lineno)d] %(asctime)s: %(message)s"
   datefmt: "%Y-%m-%dT%H:%M:%S%z"
@@ -349,9 +348,7 @@ documented above, with environment variables taking precedence over `config.yml`
 
 ## Logging
 
-Basic logging options are available in `config.yml`. The defaults are sensible for most logging scenarios,
-but are still somewhat opinionated. Some users may not like how the log messages are formatted and would prefer
-simpler output than what is provided by default.
+Basic logging options are available in `config.yml`.
 
 For example, if you want the logs to only show the message and none of the other detailed information, edit the
 `logging` section's `format` property to:

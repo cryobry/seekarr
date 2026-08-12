@@ -1,7 +1,7 @@
 ---
 # Defaults for both "missing" and "cutoff_unmet" lists
 lidarr:
-  # === API SETTINGS ===
+  # ===== API SETTINGS =====
   # Get from Lidarr: Settings > General > Security
   api_key: yourlidarrapikeygoeshere
   # URL Lidarr uses (e.g., what you use in your browser)
@@ -9,7 +9,7 @@ lidarr:
   # Path to slskd downloads inside the Lidarr container
   download_dir: /data/slskd_downloads
 
-# === SEARCH SETTINGS ===
+# ===== SEARCH SETTINGS =====
   sources: 
     - missing
     - cutoff_unmet
@@ -52,7 +52,7 @@ lidarr:
 
 # Defaults for both "missing" and "cutoff_unmet" lists
 slskd:
-  # === API SETTINGS ===
+  # ===== API SETTINGS =====
   # Create manually (see docs)
   api_key: yourslskdapikeygoeshere
   # URL Slskd uses
@@ -62,7 +62,7 @@ slskd:
   # Download path inside Slskd container
   download_dir: /downloads
 
-  # === SEARCH SETTINGS ===
+  # ===== SEARCH SETTINGS =====
   # Search timeout in seconds
   timeout: 10
   # Maximum number of peers allowed in the user's queue
