@@ -620,6 +620,14 @@ def search_for_album(album):
         logger.exception(f"Failed to perform search via SLSKD: {query}")
         return False
 
+    def cleanup_search():
+        """Best-effort delete so a timeout/error doesn't leave the search stuck in SLSKD forever."""
+        if cfg.slskd.delete_searches:
+            try:
+                slskd.searches.delete(search["id"])
+            except Exception:
+                logger.warning(f"Failed to delete search {search['id']} from SLSKD", exc_info=True)
+
     # Add timeout here to increase reliability with Slskd. Sometimes it doesn't update search status fast enough. More of an issue with lots of historical searches in slskd
     time.sleep(5)
     start_time = time.time()
@@ -630,14 +638,15 @@ def search_for_album(album):
             time.sleep(1)
             if (time.time() - start_time) > cfg.slskd.timeout:
                 logger.error("Failed to perform search via SLSKD due to timeout on search results.")
+                cleanup_search()
                 return False
 
         search_results = slskd.searches.search_responses(search["id"])  # We use this API call twice. Let's just cache it locally.
         logger.info(f"Search returned {len(search_results)} results")
-        if cfg.slskd.delete_searches:
-            slskd.searches.delete(search["id"])
+        cleanup_search()
     except Exception:
         logger.exception(f"Failed to perform search via SLSKD: {query}")
+        cleanup_search()
         return False
 
     if not len(search_results) > 0:
