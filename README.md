@@ -5,11 +5,11 @@
 
 ## About
 
-Seekarr reads the "Wanted" and/or "Cutoff Unmet" Lidarr album lists and downloads them with Slskd using the [pyarr](https://github.com/totaldebug/pyarr) and [slskd-api](https://github.com/bigoulours/slskd-python-api) Python libraries.
+Seekarr reads the "Wanted" and/or "Cutoff Unmet" Lidarr album lists and downloads them with Slskd using [pyarr](https://github.com/totaldebug/pyarr) and [slskd-api](https://github.com/bigoulours/slskd-python-api).
 
 As downloads complete in Slskd, Seekarr informs Lidarr to import the files. Alternatively, Seekarr can operate in various standalone modes using settings in [`config.yml`](config.yml).
 
-This is a great way to acquire difficult-to-find public domain recordings.
+Seekarr is a great way to acquire obscure public domain recordings.
 
 ## Prerequisites
 
@@ -26,6 +26,8 @@ This is a great way to acquire difficult-to-find public domain recordings.
 ## Configure [`config.yml`](config.yml)
 
 Create the following `config.yml` file in the directory you will mount as `/data` in the container, typically `$HOME/.config/seekarr/config.yml`.
+
+Note: Seekarr will convert an existing Soularr-style `config.ini` to `config.yml` if no `config.yml` is found.
 
 ```yaml
 # Defaults for both "missing" and "cutoff_unmet" lists
@@ -59,7 +61,7 @@ lidarr:
   # Pick release with most common track count
   use_most_common_tracknum: True
   allow_multi_disc: True
-  # Accepted release countries
+  # Accepted release countries (see https://musicbrainz.org/doc/Release/Country)
   accepted_countries:
     - Europe
     - Japan
@@ -74,7 +76,7 @@ lidarr:
   disable_sync: False
   # Skip re-downloading albums that previously failed to import into Lidarr
   failed_import_denylist: True
-  # Accepted formats to download
+  # Accepted formats to download (see https://pastebin.com/raw/pzGVUgaE)
   accepted_formats:
     - CD
     - Digital Media
@@ -187,16 +189,14 @@ logging:
   backup_count: 3
 ```
 
-### Specify which Lidarr wanted lists to search using `lidarr.sources`
+### Specify which Lidarr wanted lists to query using `lidarr.sources`
 
 The `lidarr.sources` list specifies the order of Lidarr wanted lists to process (e.g. [`missing`, `cutoff_unmet`]).
 
 ### Per-list overrides
 
-The nested blocks in `missing:` and `cutoff_unmet:` override the top-level `lidarr:` and `slskd:` defaults.
+`missing.lidarr`, `missing.slskd`, `cutoff_unmet.lidarr`, and `cutoff_unmet.slskd` override the top-level `lidarr` and `slskd` defaults.
 Useful if, say, you want to accept Vinyl releases for missing albums but only CD/Digital for cutoff-unmet upgrades.
-
-List of [countries](https://musicbrainz.org/doc/Release/Country) and [formats](https://pastebin.com/raw/pzGVUgaE) from MusicBrainz.
 
 ### Environment Variable Overrides
 
@@ -221,7 +221,7 @@ python -m pip install -r requirements.txt
 python seekarr.py [OPTION...]
 ```
 
-Note: `seekarr.py` expects `config.yml` to be in the same directory unless `--config` is specified.
+Note: `seekarr.py` expects `config.yml` to be in the same directory unless `--config-dir` is specified.
 
 ---
 
@@ -267,7 +267,7 @@ WantedBy=default.target
 
 ```
 
-#### Run seekarr as a rootless container user service using quadlet
+#### Run Seekarr as a rootless container user service using quadlet
 
 ```bash
 mkdir -p ~/.config/containers/systemd

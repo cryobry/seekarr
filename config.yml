@@ -29,7 +29,7 @@ lidarr:
   # Pick release with most common track count
   use_most_common_tracknum: True
   allow_multi_disc: True
-  # Accepted release countries
+  # Accepted release countries (see https://musicbrainz.org/doc/Release/Country)
   accepted_countries:
     - Europe
     - Japan
@@ -44,7 +44,7 @@ lidarr:
   disable_sync: False
   # Skip re-downloading albums that previously failed to import into Lidarr
   failed_import_denylist: True
-  # Accepted formats to download
+  # Accepted formats to download (see https://pastebin.com/raw/pzGVUgaE)
   accepted_formats:
     - CD
     - Digital Media
