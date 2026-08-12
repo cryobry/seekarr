@@ -30,33 +30,51 @@ podman run -d \
   --name seekarr \
   --restart unless-stopped \
   --hostname seekarr \
-  -e TZ=ETC/UTC \
+  -e TZ=UTC \
   -v /media/slskd_downloads:/downloads \
   -v /containers/seekarr:/data \
   cryobry/seekarr:latest [OPTION...] [CMD...]
 ```
 
-### [Compose file](docker-compose.yml)
+---
 
-```yml
-services:
-  seekarr:
-    image: cryobry/seekarr:latest
-    container_name: seekarr
-    hostname: seekarr
-    user: 1000:1000 # set to your UID and GID, which can be determined via `id -u` and `id -g`, respectively
-    environment:
-      - TZ=Etc/UTC
-      - SCRIPT_INTERVAL=60 # delay before reloop in seconds
-    volumes:
-      # /downloads should match the slskd.download_dir in config.yml
-      - /media/slskd_downloads:/downloads
-      # Seekarr expects the config file at "/data" by default (use --config to override)
-      - /containers/seekarr:/data
-    restart: unless-stopped
+### [Quadlet](seekarr.container)
+
+```ini
+[Unit]
+Description=seekarr container
+Requires=podman.socket
+After=podman.socket
+
+[Container]
+ContainerName=seekarr
+Image=docker.io/cryobry/seekarr:latest
+Pull=newer
+Volume=%h/.config/seekarr:/data:Z
+Volume=%h/downloads/htpc:/downloads:z
+Environment=SCRIPT_INTERVAL=5
+Environment=TZ=America/New_York
+
+[Service]
+Restart=on-failure
+
+[Install]
+WantedBy=default.target
+
 ```
 
-### Compose file combining `lidarr`, `slskd`, and `seekarr`
+#### Run seekarr as a rootless container user service using quadlet
+
+```bash
+mkdir -p ~/.config/containers/systemd
+cp seekarr.container ~/.config/containers/systemd/
+systemctl --user daemon-reload
+systemctl --user enable --now seekarr.service
+```
+
+---
+
+### [Compose](docker-compose.yml) (`lidarr`, `slskd`, and `seekarr`)
 
 ```yml
 services:
@@ -229,9 +247,7 @@ slskd:
     - User1
     - User2
 
-# Overrides for "missing" list. Only accepted_formats (lidarr) and allowed_filetypes (slskd) can
-# be overridden here; everything else always comes from the top-level lidarr:/slskd: defaults.
-# Omit a source block entirely (or a lidarr:/slskd: key within it) to just use the defaults.
+# Custom overrides for "missing" list
 missing:
   lidarr:
     accepted_formats:
@@ -248,7 +264,7 @@ missing:
       - mp3 320
       - mp3
 
-# Overrides for "cutoff_unmet" list
+# Custom overrides for "cutoff_unmet" list
 cutoff_unmet:
   lidarr:
     accepted_formats:
@@ -300,6 +316,29 @@ python seekarr.py
 ```
 
 Note: `seekarr.py` expects `config.yml` to be in the same directory unless `--config` is specified.
+
+### Command-line runtime options
+
+The following options control where Seekarr runs and how often it checks for wanted releases. They are
+runtime options rather than settings in `config.yml` and can be passed directly to `seekarr.py` or the container.
+
+| Option | Description | Default |
+| --- | --- | --- |
+| `-c`, `--config-dir [PATH]` | Directory containing `config.yml` | Current working directory, or `/data` in Docker |
+| `-v`, `--var-dir [PATH]` | Directory for runtime files such as the lock file, logs, current-page state, and failed-import denylist | Current working directory, or `/data` in Docker |
+| `--no-lock-file` | Disable lock-file creation when running outside Docker | Lock file enabled |
+| `--interval SECONDS` | Loop forever and wait this many seconds between runs | `SCRIPT_INTERVAL`, then `300` in Docker, otherwise one run |
+
+The `--config-dir` and `--var-dir` options accept an optional path. When supplied without a path, they use
+their default directory. For example:
+
+```bash
+python seekarr.py --config-dir /etc/seekarr --var-dir /var/lib/seekarr --interval 300
+```
+
+`--interval` takes precedence over the `SCRIPT_INTERVAL` environment variable. These runtime options take
+precedence over their built-in defaults; application settings continue to follow the configuration precedence
+documented above, with environment variables taking precedence over `config.yml`.
 
 ## Logging
 

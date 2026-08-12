@@ -12,8 +12,8 @@ services:
       - SCRIPT_INTERVAL=300
     user: "1000:1000"
     volumes:
-      #"You can set /downloads to whatever you want but will then need to change the Slskd download dir in your config file"
+      # /downloads should typically match slskd.download_dir in your config file or SLSKD_DOWNLOAD_DIR env.
       - /path/to/slskd/downloads:/downloads
-      #Select where you are storing your config file. Leave "/data" since thats where the script expects the config file to be
+      # /data is where the script/container expects the config file to be by default unless --config-dir is set.
       - /path/to/config/dir:/data
     image: cryobry/seekarr:latest
