@@ -9,6 +9,8 @@ Seekarr reads the "wanted" and/or "cutoff unmet" Lidarr album lists and download
 
 As downloads complete in Slskd, Seekarr informs Lidarr to import the files. Alternatively, Seekarr can operate in various standalone modes using settings in [`config.yml`](config.yml).
 
+This is am especially great way to acquire difficult-to-find public domain recordings.
+
 ## Setup
 
 1. [Install Lidarr](https://lidarr.audio/)
@@ -288,9 +290,9 @@ logging:
 
 ### Specify which Lidarr wanted lists to search using `lidarr.sources`
 
-Te `lidarr.sources` list specifies which Lidarr wanted lists to process, and in what order (e.g. `missing`, `cutoff_unmet`).
+The `lidarr.sources` list specifies the order of Lidarr wanted lists to process (e.g. [`missing`, `cutoff_unmet`]).
 
-### Specific wanted list overrides
+### Per-list overrides
 
 The nested blocks in `missing:` and `cutoff_unmet:` override the top-level `lidarr:` and `slskd:` defaults.
 Useful if, say, you want to accept Vinyl releases for missing albums but only CD/Digital for cutoff-unmet upgrades.
@@ -345,20 +347,17 @@ documented above, with environment variables taking precedence over `config.yml`
 
 ## Logging
 
-There are some very basic options for logging found under the `logging` section of the `config.yml` file. The defaults
-should be sensible for a typical logging scenario, but are still somewhat opinionated. Some users may not like how the
-log messages are formatted and would prefer a much simpler output than what is provided by default.
+Basic logging options are available in `config.yml`. The defaults are sensible for most logging scenarios,
+but are still somewhat opinionated. Some users may not like how the log messages are formatted and would prefer
+simpler output than what is provided by default.
 
 For example, if you want the logs to only show the message and none of the other detailed information, edit the
-`logging` section's `format` property to look like this:
+`logging` section's `format` property to:
 
 ```yaml
 logging:
   format: "%(message)s"
 ```
-
-For more information on the options available for logging, including more options for changing how the messages are
-formatted, see the comments in the `logging` section from the [example config.yml](#configure-configyml).
 
 ### Log to a File
 
