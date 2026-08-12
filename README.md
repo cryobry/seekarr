@@ -5,13 +5,13 @@
 
 ## About
 
-Seekarr reads the "wanted" and/or "cutoff unmet" Lidarr album lists and downloads them with Slskd using the [pyarr](https://github.com/totaldebug/pyarr) and [slskd-api](https://github.com/bigoulours/slskd-python-api) Python libraries.
+Seekarr reads the "Wanted" and/or "Cutoff Unmet" Lidarr album lists and downloads them with Slskd using the [pyarr](https://github.com/totaldebug/pyarr) and [slskd-api](https://github.com/bigoulours/slskd-python-api) Python libraries.
 
 As downloads complete in Slskd, Seekarr informs Lidarr to import the files. Alternatively, Seekarr can operate in various standalone modes using settings in [`config.yml`](config.yml).
 
-This is am especially great way to acquire difficult-to-find public domain recordings.
+This is a great way to acquire difficult-to-find public domain recordings.
 
-## Setup
+## Prerequisites
 
 1. [Install Lidarr](https://lidarr.audio/)
 
@@ -23,110 +23,9 @@ This is am especially great way to acquire difficult-to-find public domain recor
     - Specify your `slskd.host_url`, [`slskd.api_key`](https://github.com/slskd/slskd/blob/master/docs/config.md#authentication) and `slskd.download_dir` in [config.yml](config.yml).
     - Ensure Slskd can see your `slskd.download_dir`. If you are running Lidarr in a container you may need to mount the directory.
 
----
-
-### Podman/Docker (recommended)
-
-Soularr container images are available via [ghcr.io](https://github.com/cryobry/seekarr/pkgs/container/seekarr) and [docker.io](https://hub.docker.com/r/cryobry/seekarr).
-
-```shell
-podman run -d \
-  --name seekarr \
-  --restart unless-stopped \
-  --hostname seekarr \
-  -e TZ=UTC \
-  -v /media/slskd_downloads:/downloads \
-  -v /containers/seekarr:/data \
-  cryobry/seekarr:latest [OPTION...] [CMD...]
-```
-
----
-
-### [Quadlet](seekarr.container)
-
-```ini
-[Unit]
-Description=seekarr container
-Requires=podman.socket
-After=podman.socket
-
-[Container]
-ContainerName=seekarr
-Image=docker.io/cryobry/seekarr:latest
-Pull=newer
-Volume=%h/.config/seekarr:/data:Z
-Volume=%h/downloads/htpc:/downloads:z
-Environment=SCRIPT_INTERVAL=5
-Environment=TZ=America/New_York
-
-[Service]
-Restart=on-failure
-
-[Install]
-WantedBy=default.target
-
-```
-
-#### Run seekarr as a rootless container user service using quadlet
-
-```bash
-mkdir -p ~/.config/containers/systemd
-cp seekarr.container ~/.config/containers/systemd/
-systemctl --user daemon-reload
-systemctl --user enable --now seekarr.service
-```
-
----
-
-### [Compose](docker-compose.yml) (`lidarr`, `slskd`, and `seekarr`)
-
-```yml
-services:
-  lidarr:
-    image: ghcr.io/hotio/lidarr:latest
-    container_name: lidarr
-    hostname: lidarr
-    environment:
-      - TZ=ETC/UTC
-    volumes:
-      - /containers/lidarr:/config
-      - /media:/data
-    ports:
-      - "8686:8686"
-    restart: unless-stopped
-
-  slskd:
-    image: slskd/slskd
-    container_name: slskd
-    hostname: slskd
-    environment:
-      - TZ=ETC/UTC
-      - SLSKD_REMOTE_CONFIGURATION=true
-    ports:
-      - "5030:5030"
-      - "5031:5031"
-      - "50300:50300"
-    volumes:
-      - /containers/slskd:/app
-      - /media:/data
-    restart: unless-stopped
-
-  seekarr:
-    image: cryobry/seekarr:latest
-    container_name: seekarr
-    hostname: seekarr
-    environment:
-      - TZ=ETC/UTC
-      - SCRIPT_INTERVAL=300
-    volumes:
-      - /media/slskd_downloads:/downloads
-      - /container/seekarr:/data
-    restart: unless-stopped
-```
-
 ## Configure [`config.yml`](config.yml)
 
-### Example
+Create the following `config.yml` file in the directory you will mount as `/data` in the container, typically `$HOME/.config/seekarr/config.yml`.
 
 ```yaml
 # Defaults for both "missing" and "cutoff_unmet" lists
@@ -301,7 +200,7 @@ List of [countries](https://musicbrainz.org/doc/Release/Country) and [formats](h
 
 ### Environment Variable Overrides
 
-Env vars always take priority over `config.yml`, including per-source (`missing:`/`cutoff_unmet:`) overrides.
+Global env vars take priority over `config.yml`, including per-source (`missing:`/`cutoff_unmet:`) overrides.
 
 Any `lidarr:`/`slskd:` setting can be overridden with an env var named after its YAML key, underscored and uppercased
 and prefixed with the section (similar to Slskd):
@@ -311,21 +210,124 @@ and prefixed with the section (similar to Slskd):
 
 This is handy for keeping secrets like API keys out of `config.yml` (e.g. via Docker secrets).
 
-List values are comma-separated (e.g. `LIDARR_ACCEPTED_FORMATS=CD,Digital Media,Vinyl`).
+Lists in env vars are comma-separated (e.g. `LIDARR_ACCEPTED_FORMATS=CD,Digital Media,Vinyl`).
 
 ## Running Seekarr
 
+### CLI
+
 ```bash
 python -m pip install -r requirements.txt
-python seekarr.py
+python seekarr.py [OPTION...]
 ```
 
 Note: `seekarr.py` expects `config.yml` to be in the same directory unless `--config` is specified.
 
-### Command-line runtime options
+---
 
-The following options control where Seekarr runs and how often it checks for wanted releases. They are
-runtime options rather than settings in `config.yml` and can be passed directly to `seekarr.py` or the container.
+### Podman/Docker
+
+Soularr container images are available via [ghcr.io](https://github.com/cryobry/seekarr/pkgs/container/seekarr) and [docker.io](https://hub.docker.com/r/cryobry/seekarr).
+
+```shell
+podman run -d \
+  --name seekarr \
+  --restart unless-stopped \
+  --hostname seekarr \
+  -e TZ=UTC \
+  -v /media/slskd_downloads:/downloads \
+  -v /containers/seekarr:/data \
+  docker.io/cryobry/seekarr:latest [OPTION...] [CMD...]
+```
+
+---
+
+### [Quadlet](seekarr.container) (recommended)
+
+```ini
+[Unit]
+Description=seekarr container
+Requires=podman.socket
+After=podman.socket
+
+[Container]
+ContainerName=seekarr
+Image=docker.io/cryobry/seekarr:latest
+Pull=newer
+Volume=%h/.config/seekarr:/data:Z
+Volume=%h/downloads/htpc:/downloads:z
+Environment=SCRIPT_INTERVAL=5
+Environment=TZ=America/New_York
+
+[Service]
+Restart=on-failure
+
+[Install]
+WantedBy=default.target
+
+```
+
+#### Run seekarr as a rootless container user service using quadlet
+
+```bash
+mkdir -p ~/.config/containers/systemd
+cp seekarr.container ~/.config/containers/systemd/
+systemctl --user daemon-reload
+systemctl --user enable --now seekarr.service
+```
+
+---
+
+### [Compose](docker-compose.yml) (`lidarr`, `slskd`, and `seekarr`)
+
+```yml
+services:
+  lidarr:
+    image: ghcr.io/hotio/lidarr:latest
+    container_name: lidarr
+    hostname: lidarr
+    environment:
+      - TZ=ETC/UTC
+    volumes:
+      - /containers/lidarr:/config
+      - /media:/data
+    ports:
+      - "8686:8686"
+    restart: unless-stopped
+
+  slskd:
+    image: slskd/slskd
+    container_name: slskd
+    hostname: slskd
+    environment:
+      - TZ=ETC/UTC
+      - SLSKD_REMOTE_CONFIGURATION=true
+    ports:
+      - "5030:5030"
+      - "5031:5031"
+      - "50300:50300"
+    volumes:
+      - /containers/slskd:/app
+      - /media:/data
+    restart: unless-stopped
+
+  seekarr:
+    image: cryobry/seekarr:latest
+    container_name: seekarr
+    hostname: seekarr
+    environment:
+      - TZ=ETC/UTC
+      - SCRIPT_INTERVAL=300
+    volumes:
+      - /media/slskd_downloads:/downloads
+      - /container/seekarr:/data
+    restart: unless-stopped
+```
+
+### Command-line options
+
+The following runtime options can be passed directly to `seekarr.py` or the container,
+and control where Seekarr runs and how often it checks for wanted releases.
 
 | Option | Description | Default |
 | --- | --- | --- |
@@ -371,7 +373,8 @@ logging:
   backup_count: 3
 ```
 
-The log file is written to the data directory (the same directory as `config.yml` when running locally, or `/data/` in Docker). When the file reaches `max_bytes`, it is rotated, keeping up to `backup_count` old files (`seekarr.log`, `seekarr.log.1`, `seekarr.log.2`, etc.).
+The log file is written to the data directory (the same directory as `config.yml` when running locally, or `/data/` in Docker).
+When the file reaches `max_bytes`, it is rotated, keeping up to `backup_count` old files (`seekarr.log`, `seekarr.log.1`, `seekarr.log.2`, etc.).
 
 See the [Python logging documentation](https://docs.python.org/3/library/logging.html) for advanced logging usage.
 
