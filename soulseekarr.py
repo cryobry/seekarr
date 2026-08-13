@@ -2,7 +2,7 @@
 
 import argparse
 import configparser
-import math
+import random
 import re
 import os
 import sys
@@ -92,8 +92,10 @@ class LidarrConfig:
     download_dir: str
     disable_sync: bool
     sources: list[str] # missing, cutoff_unmet
-    type: str
-    page_size: int
+    search_type: str
+    chunk_size: int
+    sort_key: str
+    sort_dir: str
     title_blacklist: list[str]
     failed_import_denylist: bool
     use_selected_lidarr_release: bool
@@ -161,8 +163,10 @@ class AppConfig:
             download_dir=require_config_value(env_override("lidarr", "download_dir", lidarr_cfg.get("download_dir")), "lidarr.download_dir"),
             disable_sync=bool(env_override("lidarr", "disable_sync", resolved_lidarr.get("disable_sync", False))),
             sources=as_list(env_override("lidarr", "sources", lidarr_cfg.get("sources", ["missing"])), lower=True),
-            type=str(env_override("lidarr", "type", resolved_lidarr.get("type", "first_page"))).lower().strip(),
-            page_size=int(env_override("lidarr", "page_size", resolved_lidarr.get("page_size", 10))),
+            search_type=str(env_override("lidarr", "search_type", resolved_lidarr.get("search_type", "incrementing"))).lower().strip(),
+            chunk_size=int(env_override("lidarr", "chunk_size", resolved_lidarr.get("chunk_size", 10))),
+            sort_key=str(env_override("lidarr", "sort_key", resolved_lidarr.get("sort_key", "albums.title"))).strip(),
+            sort_dir=str(env_override("lidarr", "sort_dir", resolved_lidarr.get("sort_dir", "ascending"))).strip().lower(),
             title_blacklist=as_list(env_override("lidarr", "title_blacklist", resolved_lidarr.get("title_blacklist")), lower=True),
             failed_import_denylist=bool(env_override("lidarr", "failed_import_denylist", resolved_lidarr.get("failed_import_denylist", True))),
             use_selected_lidarr_release=bool(env_override("lidarr", "use_selected_lidarr_release", resolved_lidarr.get("use_selected_lidarr_release", False))),
@@ -572,7 +576,7 @@ def is_blacklisted(title: str) -> bool:
     return False
 
 
-def filter_list(albums):
+def filter_list(albums: list[WantedAlbum]):
     """Apply the failed-import denylist, disable_sync grabbed-albums, and title blacklist filters.
 
     Combines what used to be several separate filtering passes into one pass for clarity.
@@ -613,7 +617,7 @@ def filter_list(albums):
         return None
 
 
-def search_for_album(album):
+def search_for_album(album: WantedAlbum):
     """Search slskd for an album, poll until the search completes, and cache matching results.
 
     Builds the search query (optionally prepending the artist name and stripping blacklisted
@@ -893,7 +897,7 @@ def try_multi_enqueue(release, all_tracks, results, allowed_filetype, artist_nam
         return False, None
 
 
-def find_download(album, grab_list):
+def find_download(album: WantedAlbum, grab_list):
     """Find a download source for `album` by trying every allowed filetype and release.
 
     For each quality, tries the single-disk match path first, falling back to the multi-disk
@@ -1323,7 +1327,6 @@ def migrate_soularr_ini_config(config_dir: str) -> bool:
         return [item.strip() for item in get(section, option, fallback).split(",") if item.strip()]
 
     search_source = get("Search Settings", "search_source", "missing").lower().strip()
-    sources = ["missing", "cutoff_unmet"] if search_source == "all" else [search_source]
 
     new_config = {
         "lidarr": {
@@ -1331,9 +1334,9 @@ def migrate_soularr_ini_config(config_dir: str) -> bool:
             "host_url": get("Lidarr", "host_url"),
             "download_dir": get("Lidarr", "download_dir"),
             "disable_sync": get_bool("Lidarr", "disable_sync", False),
-            "sources": sources,
-            "type": get("Search Settings", "search_type", "first_page").lower().strip(),
-            "page_size": get_int("Search Settings", "number_of_albums_to_grab", 10),
+            "sources": ["missing", "cutoff_unmet"] if search_source == "all" else [search_source],
+            "search_type": get("Search Settings", "search_type", "incrementing").lower().strip(),
+            "chunk_size": get_int("Search Settings", "number_of_albums_to_grab", 10),
             "title_blacklist": get_csv("Search Settings", "title_blacklist"),
             "failed_import_denylist": get_bool("Search Settings", "failed_import_denylist", True),
             "use_selected_lidarr_release": get_bool("Release Settings", "use_selected_lidarr_release", False),
@@ -1484,65 +1487,80 @@ def get_random_chunk(source: str, all_records: list[WantedAlbum]) -> list[Wanted
 WANTED_API_PAGE_SIZE = 250
 
 
-def get_records(source: str) -> list:
-    """Fetch Lidarr's wanted records for `source` ("missing" or "cutoff_unmet"), paginated per `lidarr.type`.
+def get_records(source: str) -> list[WantedAlbum]:
+    """Fetch every one of Lidarr's wanted records for `source` ("missing" or "cutoff_unmet"),
+    filter out anything already in Lidarr's download queue, then hand back one chunk of the
+    remainder in chunks according to `lidarr.search_type` (`incrementing` or `random`).
 
-    Applies the configured pagination strategy (`all`, `incrementing_page`, or `first_page`),
-    then filters out any records that are already in Lidarr's download queue.
+    There's no way to ask Lidarr for a subset of the wanted list for processing purposes, so
+    we always fetch every record (WANTED_API_PAGE_SIZE only controls the HTTP batch size).
+    Each raw record is pruned down to a `WantedAlbum` (see prune_wanted_record()) right after
+    fetching, since Lidarr's full per-album payload is much larger than what we need and this
+    list can run into the thousands for large libraries.
+    `search_type: random` shuffles the full list once and works through it in chunk_size-sized
+    chunks across run_once() calls within the same process (like "incrementing" but shuffled),
+    reshuffling once every record has had a turn. State lives only in memory (see
+    `random_order_state`), so a fresh process always starts a new shuffle cycle. Ignores
+    lidarr.sort_key/sort_dir and always requests "id" ascending instead, since the shuffle
+    discards Lidarr's ordering anyway and "id" (the primary key) is cheaper for Lidarr to sort
+    by than the other keys - no join (unlike artists.sortName) or extra sort step (unlike
+    albums.releaseDate/albums.title), which matters once the wanted list gets large.
+    `search_type: incrementing`'s per-source next-chunk cursor (`current_chunk_index`) is
+    likewise in-memory only, so a fresh process always restarts at chunk 0.
     """
     missing = source == "missing"
+    randomize = cfg.lidarr.search_type == "random"
+
+    def fetch_page(page: int) -> dict:
+        kwargs = {"page": page, "page_size": WANTED_API_PAGE_SIZE, "missing": missing}
+        kwargs["sort_key"] = "id" if randomize else cfg.lidarr.sort_key
+        kwargs["sort_dir"] = "ascending" if randomize else cfg.lidarr.sort_dir
+        return lidarr.get_wanted(**kwargs)
+
     try:
-        wanted = lidarr.get_wanted(
-            page_size=cfg.lidarr.page_size,
-            sort_dir="ascending",
-            sort_key="albums.title",
-            missing=missing,
-        )
+        wanted = fetch_page(1)
     except PyarrError as ex:
         logger.error(f"An error occurred when attempting to get records: {ex}")
         return []
 
     total_wanted = wanted["totalRecords"]
-
-    wanted_records = []
-    if cfg.lidarr.type == "all":
-        page = 1
-        while len(wanted_records) < total_wanted:
-            try:
-                wanted = lidarr.get_wanted(
-                    page=page,
-                    page_size=cfg.lidarr.page_size,
-                    sort_dir="ascending",
-                    sort_key="albums.title",
-                    missing=missing,
-                )
-            except PyarrError as ex:
-                logger.error(f"Failed to grab record: {ex}")
-            wanted_records.extend(wanted["records"])
-            page += 1
-
-    elif cfg.lidarr.type == "incrementing_page":
-        page = get_current_page(cfg.current_page_file_path)
+    all_records = list(wanted["records"])
+    page = 2
+    while len(all_records) < total_wanted:
         try:
-            wanted_records = lidarr.get_wanted(
-                page=page,
-                page_size=cfg.lidarr.page_size,
-                sort_dir="ascending",
-                sort_key="albums.title",
-                missing=missing,
-            )["records"]
+            wanted = fetch_page(page)
         except PyarrError as ex:
             logger.error(f"Failed to grab record: {ex}")
-        page = 1 if page >= math.ceil(total_wanted / cfg.lidarr.page_size) else page + 1
-        update_current_page(cfg.current_page_file_path, str(page))
+            break
+        all_records.extend(wanted["records"])
+        page += 1
 
-    elif cfg.lidarr.type == "first_page":
-        wanted_records = wanted["records"]
+    pruned_records = [prune_wanted_record(raw) for raw in all_records]
+    pruned_records = filter_queued_records(pruned_records)
 
-    else:
-        remove_lock_file(cfg.lock_file_path)
+    if not pruned_records:
+        return pruned_records
 
-        raise ValueError(f"[lidarr.type] - {cfg.lidarr.type = } is not valid")
+    if cfg.lidarr.search_type == "random":
+        return get_random_chunk(source, pruned_records)
+
+    if cfg.lidarr.search_type == "incrementing":
+        chunk_size = max(1, cfg.lidarr.chunk_size)
+        chunks = [pruned_records[i : i + chunk_size] for i in range(0, len(pruned_records), chunk_size)]
+        index = current_chunk_index.get(source, 0)
+        index = index if index < len(chunks) else 0
+        next_index = 0 if index >= len(chunks) - 1 else index + 1
+        current_chunk_index[source] = next_index
+        return chunks[index]
+
+    remove_lock_file(cfg.lock_file_path)
+    raise ValueError(f"[lidarr.search_type] - {cfg.lidarr.search_type = } is not valid")
+
+
+def filter_queued_records(records: list[WantedAlbum]) -> list[WantedAlbum]:
+    """Drop any wanted record whose album is already in Lidarr's download queue."""
+    if not records:
+        return records
 
     try:
         queued_records = lidarr.get_queue(sort_dir="ascending", sort_key="albums.title")
@@ -1567,19 +1585,17 @@ def get_records(source: str) -> list:
             else:
                 logger.warning(f"Dropping entry due to missing key in keylist: [{record.keys()}]")
 
-        wanted_records_not_queued = []
-        for record in wanted_records:
+        not_queued = []
+        for record in records:
             for release in record["releases"]:
                 if release["albumId"] in queued_album_ids:
                     logging.info(f"Skipping record '{record['title']}' because it's already in download queue")
                     break
             else:  # This only runs if the loop is broken out of. Saves on all the boolean found= stuff
-                wanted_records_not_queued.append(record)
-        if len(wanted_records_not_queued) > 0:
-            wanted_records = wanted_records_not_queued
-        else:
+                not_queued.append(record)
+        if not not_queued:
             logging.info("No records wanted that arent already queued")
-            wanted_records = []
+        return not_queued
     except PyarrError as ex:
         logger.error(f"Failed to get queue details so not filtering based on queue: {ex}")
         return records
