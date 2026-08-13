@@ -15,7 +15,7 @@ As downloads complete in Slskd, Soulseekarr informs Lidarr to import the files. 
     - Specify your `lidarr.api_key`, `lidarr.host_url`, and `lidarr.download_dir` in [config.yml](config.yml).
     - Ensure Lidarr can see your `slskd.download_dir`. If you are running Lidarr in a container you may need to mount the directory.
 
-2. [Install Slskd](https://github.com/slskd/slskd)
+2. [Install Slskd](https://github.com/slskd/slskd) > 0.22.2
 
     - Specify your `slskd.host_url`, [`slskd.api_key`](https://github.com/slskd/slskd/blob/master/docs/config.md#authentication) and `slskd.download_dir` in [config.yml](config.yml).
     - Ensure Slskd can see your `slskd.download_dir`. If you are running Lidarr in a container you may need to mount the directory.

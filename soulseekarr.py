@@ -185,7 +185,7 @@ class AppConfig:
             delete_searches=bool(env_override("slskd", "delete_searches", resolved_slskd.get("delete_searches", True))),
             remove_completed_downloads=bool(env_override("slskd", "remove_completed_downloads", resolved_slskd.get("remove_completed_downloads", True))),
             requeue_failed_downloads=bool(env_override("slskd", "requeue_failed_downloads", resolved_slskd.get("requeue_failed_downloads", True))),
-            timeout=int(env_override("slskd", "timeout", resolved_slskd.get("timeout", 5))),
+            timeout=int(env_override("slskd", "timeout", resolved_slskd.get("timeout", 10))),
             maximum_peer_queue=int(env_override("slskd", "maximum_peer_queue", resolved_slskd.get("maximum_peer_queue", 50))),
             minimum_peer_upload_speed=int(env_override("slskd", "minimum_peer_upload_speed", resolved_slskd.get("minimum_peer_upload_speed", 0))),
             minimum_match_ratio=float(env_override("slskd", "minimum_filename_match_ratio", resolved_slskd.get("minimum_filename_match_ratio", 0.5))),
@@ -245,7 +245,7 @@ def album_match(lidarr_tracks, slskd_tracks, username, filetype, album_name):
             # Same but with "_" as the separator
             ratio = check_ratio("_", ratio, lidarr_filename, slskd_filename)
 
-            # Same checks but preappend album name.
+            # Same checks but prepend album name.
             ratio = check_ratio("", ratio, album_name + " " + lidarr_filename, slskd_filename)
             ratio = check_ratio(" ", ratio, album_name + " " + lidarr_filename, slskd_filename)
             ratio = check_ratio("_", ratio, album_name + " " + lidarr_filename, slskd_filename)
@@ -482,7 +482,6 @@ def check_for_match(tracks, allowed_filetype, file_dirs, username, album_name):
     """
     Does the actual match checking on a single disk/album.
     """
-    logger.debug(f"Current broken users {broken_user}")
     if username in broken_user:
         return False, {}, ""
     for file_dir in file_dirs:
@@ -492,17 +491,10 @@ def check_for_match(tracks, allowed_filetype, file_dirs, username, album_name):
 
         if file_dir not in folder_cache[username]:
             logger.info(f"User: {username} Folder: {file_dir} not in cache. Fetching from SLSKD")
-            version = slskd.application.version()
-            version_check = slskd_version_check(version)
-
-            if not version_check:
-                logger.info(f"Error checking slskd version number: {version}. Version check > 0.22.2: {version_check}. This would most likely be fixed by updating your slskd.")
 
             try:
-                if version_check:
-                    directory = slskd.users.directory(username=username, directory=file_dir)[0]
-                else:
-                    directory = slskd.users.directory(username=username, directory=file_dir)
+                # Assumes slskd > 0.22.2, whose users.directory() returns a list of directories.
+                directory = slskd.users.directory(username=username, directory=file_dir)[0]
             except HTTPError as ex:
                 status_code = ex.response.status_code if ex.response is not None else "unknown"
                 logger.warning(f'HTTP error getting directory from user "{username}" folder "{file_dir}": {status_code}')
@@ -1326,12 +1318,6 @@ def remove_lock_file(path: str) -> None:
     """Docker doesn't use a lock file, so only remove it outside Docker."""
     if not is_docker() and os.path.exists(path):
         os.remove(path)
-
-
-def slskd_version_check(version, target="0.22.2"):
-    version_tuple = tuple(map(int, version.split(".")[:3]))
-    target_tuple = tuple(map(int, target.split(".")[:3]))
-    return version_tuple > target_tuple
 
 
 def setup_logging(config: dict, var_dir: str) -> None:
