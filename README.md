@@ -90,6 +90,9 @@ slskd:
   url_base: /
   # Download path inside Slskd container
   download_dir: /downloads
+  # Where failed Lidarr imports are moved to for manual review. Defaults to
+  # "<download_dir>/failed_imports" if unset.
+  # failed_imports_dir: /downloads/failed_imports
 
   # ===== SEARCH SETTINGS =====
   # Search timeout in seconds

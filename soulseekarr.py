@@ -109,6 +109,7 @@ class SlskdConfig:
     api_key: str
     host_url: str
     download_dir: str
+    failed_imports_dir: str
     url_base: str
     stalled_timeout: int
     remote_queue_timeout: int
@@ -181,10 +182,16 @@ class AppConfig:
             accepted_formats=as_list(env_override("lidarr", "accepted_formats", resolved_lidarr.get("accepted_formats", ["CD", "Digital Media", "Vinyl"]))),
         )
 
+        # Pre-set this so we can derive the fallback failed_imports_dir in the download dir
+        slskd_download_dir = require_config_value(env_override("slskd", "download_dir", slskd_cfg.get("download_dir")), "slskd.download_dir")
+
         slskd = SlskdConfig(
             api_key=require_config_value(env_override("slskd", "api_key", slskd_cfg.get("api_key")), "slskd.api_key"),
             host_url=require_config_value(env_override("slskd", "host_url", slskd_cfg.get("host_url")), "slskd.host_url"),
-            download_dir=require_config_value(env_override("slskd", "download_dir", slskd_cfg.get("download_dir")), "slskd.download_dir"),
+            download_dir=slskd_download_dir,
+            failed_imports_dir=str(
+                env_override("slskd", "failed_imports_dir", resolved_slskd.get("failed_imports_dir") or os.path.join(slskd_download_dir, "failed_imports"))
+            ),
             url_base=str(env_override("slskd", "url_base", slskd_cfg.get("url_base", "/"))),
             stalled_timeout=int(env_override("slskd", "stalled_timeout", resolved_slskd.get("stalled_timeout", 3600))),
             remote_queue_timeout=int(env_override("slskd", "remote_queue_timeout", resolved_slskd.get("remote_queue_timeout", 300))),
@@ -1225,8 +1232,8 @@ def grab_most_wanted(albums):
     return count
 
 def move_failed_import(src_path):
-    """Move a failed Lidarr import's folder into a `failed_imports` subfolder, avoiding name clashes."""
-    failed_imports_dir = os.path.join(cfg.slskd.download_dir, "failed_imports")
+    """Move a failed Lidarr import's folder into `cfg.slskd.failed_imports_dir`, avoiding name clashes."""
+    failed_imports_dir = cfg.slskd.failed_imports_dir
 
     if not os.path.exists(failed_imports_dir):
         os.makedirs(failed_imports_dir)
