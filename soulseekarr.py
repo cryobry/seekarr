@@ -793,6 +793,12 @@ def downloads_all_done(downloads):
     return all_done, error_list, remote_queue
 
 
+def prefix_filenames_with_dir(directory, file_dir):
+    """Rewrite each file's filename to include its full remote directory path, as slskd's enqueue API expects."""
+    for file in directory["files"]:
+        file["filename"] = file_dir + "\\" + file["filename"]
+
+
 def try_enqueue(all_tracks, results, allowed_filetype, artist_name, album_name):
     """Try to find and enqueue a single-disk album match from any user in `results`."""
     for username in results:
@@ -803,8 +809,7 @@ def try_enqueue(all_tracks, results, allowed_filetype, artist_name, album_name):
         found, directory, file_dir = check_for_match(all_tracks, allowed_filetype, file_dirs, username, album_name)
         if found:
             directory = download_filter(allowed_filetype, directory)
-            for i in range(0, len(directory["files"])):
-                directory["files"][i]["filename"] = file_dir + "\\" + directory["files"][i]["filename"]
+            prefix_filenames_with_dir(directory, file_dir)
             try:
                 downloads = slskd_do_enqueue(username=username, files=directory["files"], file_dir=file_dir)
                 if downloads is not None:
@@ -858,8 +863,7 @@ def try_multi_enqueue(release, all_tracks, results, allowed_filetype, artist_nam
         enqueued = 0
         for disk in split_release:
             username, directory, file_dir = disk["source"]
-            for i in range(0, len(directory["files"])):
-                directory["files"][i]["filename"] = file_dir + "\\" + directory["files"][i]["filename"]
+            prefix_filenames_with_dir(directory, file_dir)
             try:
                 downloads = slskd_do_enqueue(username=username, files=directory["files"], file_dir=file_dir)
                 if downloads is not None:
@@ -1441,68 +1445,26 @@ def prune_wanted_record(raw: dict) -> WantedAlbum:
     }
 
 
-def get_random_chunk(source: str, all_records: list[WantedAlbum]) -> list[WantedAlbum]:
-    """Return the next chunk of `all_records` from a per-source shuffled cycle, held in the
-    module-level `random_order_state` so every record gets a turn before the list is reshuffled
-    and the cycle starts over. Only persists in memory for the life of the process (see
-    `random_order_state`'s comment) - it's regenerated from scratch on the next process start.
-    """
-    chunk_size = max(1, cfg.lidarr.chunk_size)
-    records_by_id = {record["id"]: record for record in all_records}
-
-    source_state = random_order_state.get(source) or {}
-    # Drop ids no longer wanted (already grabbed, imported, or dequeued elsewhere).
-    order = [album_id for album_id in source_state.get("order", []) if album_id in records_by_id]
-    index = source_state.get("index", 0)
-
-    new_ids = [album_id for album_id in records_by_id if album_id not in order]
-    if new_ids:
-        random.shuffle(new_ids)
-        order.extend(new_ids)
-
-    if not order:
-        return []
-
-    if index >= len(order):
-        index = 0
-
-    chunk_ids = order[index : index + chunk_size]
-    index += chunk_size
-    if index >= len(order):
-        # Every record has had a turn this cycle; reshuffle and start the next one.
-        index = 0
-        random.shuffle(order)
-
-    random_order_state[source] = {"order": order, "index": index}
-
-    return [records_by_id[album_id] for album_id in chunk_ids]
-
-
 # Page size used only for the internal Lidarr API calls that bulk-fetch the wanted list;
 # unrelated to lidarr.chunk_size, which controls how many records get processed per run.
 WANTED_API_PAGE_SIZE = 250
 
 
-def get_records(source: str) -> list[WantedAlbum]:
+def fetch_wanted_records(source: str) -> list[WantedAlbum]:
     """Fetch every one of Lidarr's wanted records for `source` ("missing" or "cutoff_unmet"),
-    filter out anything already in Lidarr's download queue, then hand back one chunk of the
-    remainder in chunks according to `lidarr.search_type` (`incrementing` or `random`).
+    pruned down to a `WantedAlbum` each, with anything already in Lidarr's download queue
+    filtered out.
 
     There's no way to ask Lidarr for a subset of the wanted list for processing purposes, so
     we always fetch every record (WANTED_API_PAGE_SIZE only controls the HTTP batch size).
-    Each raw record is pruned down to a `WantedAlbum` (see prune_wanted_record()) right after
-    fetching, since Lidarr's full per-album payload is much larger than what we need and this
-    list can run into the thousands for large libraries.
-    `search_type: random` shuffles the full list once and works through it in chunk_size-sized
-    chunks across run_once() calls within the same process (like "incrementing" but shuffled),
-    reshuffling once every record has had a turn. State lives only in memory (see
-    `random_order_state`), so a fresh process always starts a new shuffle cycle. Ignores
-    lidarr.sort_key/sort_dir and always requests "id" ascending instead, since the shuffle
-    discards Lidarr's ordering anyway and "id" (the primary key) is cheaper for Lidarr to sort
-    by than the other keys - no join (unlike artists.sortName) or extra sort step (unlike
-    albums.releaseDate/albums.title), which matters once the wanted list gets large.
-    `search_type: incrementing`'s per-source next-chunk cursor (`current_chunk_index`) is
-    likewise in-memory only, so a fresh process always restarts at chunk 0.
+    Each raw record is pruned right after fetching (see prune_wanted_record()), since Lidarr's
+    full per-album payload is much larger than what we need and this list can run into the
+    thousands for large libraries.
+    `search_type: random` ignores lidarr.sort_key/sort_dir and always requests "id" ascending
+    instead, since get_records() shuffles the result anyway and "id" (the primary key) is
+    cheaper for Lidarr to sort by than the other keys - no join (unlike artists.sortName) or
+    extra sort step (unlike albums.releaseDate/albums.title), which matters once the wanted
+    list gets large.
     """
     missing = source == "missing"
     randomize = cfg.lidarr.search_type == "random"
@@ -1532,25 +1494,36 @@ def get_records(source: str) -> list[WantedAlbum]:
         page += 1
 
     pruned_records = [prune_wanted_record(raw) for raw in all_records]
-    pruned_records = filter_queued_records(pruned_records)
+    return filter_queued_records(pruned_records)
 
-    if not pruned_records:
-        return pruned_records
 
-    if cfg.lidarr.search_type == "random":
-        return get_random_chunk(source, pruned_records)
+def get_records(source: str) -> list[WantedAlbum]:
+    """Return the next chunk_size-sized batch of `source`'s wanted records, fetching a fresh
+    batch from Lidarr (see fetch_wanted_records()) and splitting it into chunks whenever the
+    previous batch has been fully handed out (see `pending_chunks`).
 
-    if cfg.lidarr.search_type == "incrementing":
+    Chunks are built once per fetch and handed out one at a time across run_once() calls
+    instead of re-fetching Lidarr's whole wanted list on every call. Once every chunk from a
+    fetch has had a turn, the next call fetches again, so a full pass always ends with fresh
+    data from Lidarr rather than reusing a stale snapshot indefinitely.
+    `search_type: random` shuffles each freshly fetched batch once before chunking it;
+    `incrementing` keeps Lidarr's requested sort order.
+    """
+    if not pending_chunks.get(source):
+        records = fetch_wanted_records(source)
+        if not records:
+            return []
+
+        if cfg.lidarr.search_type == "random":
+            random.shuffle(records)
+        elif cfg.lidarr.search_type != "incrementing":
+            remove_lock_file(cfg.lock_file_path)
+            raise ValueError(f"[lidarr.search_type] - {cfg.lidarr.search_type = } is not valid")
+
         chunk_size = max(1, cfg.lidarr.chunk_size)
-        chunks = [pruned_records[i : i + chunk_size] for i in range(0, len(pruned_records), chunk_size)]
-        index = current_chunk_index.get(source, 0)
-        index = index if index < len(chunks) else 0
-        next_index = 0 if index >= len(chunks) - 1 else index + 1
-        current_chunk_index[source] = next_index
-        return chunks[index]
+        pending_chunks[source] = [records[i : i + chunk_size] for i in range(0, len(records), chunk_size)]
 
-    remove_lock_file(cfg.lock_file_path)
-    raise ValueError(f"[lidarr.search_type] - {cfg.lidarr.search_type = } is not valid")
+    return pending_chunks[source].pop(0)
 
 
 def filter_queued_records(records: list[WantedAlbum]) -> list[WantedAlbum]:
@@ -1574,10 +1547,10 @@ def filter_queued_records(records: list[WantedAlbum]) -> list[WantedAlbum]:
                 current_queue.extend(next_page["records"])
                 page += 1
 
-        queued_album_ids = []
+        queued_album_ids = set()
         for record in current_queue:
             if "albumId" in record:
-                queued_album_ids.append(record["albumId"])
+                queued_album_ids.add(record["albumId"])
             else:
                 logger.warning(f"Dropping entry due to missing key in keylist: [{record.keys()}]")
 
