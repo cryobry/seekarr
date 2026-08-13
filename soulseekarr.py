@@ -425,49 +425,35 @@ def verify_filetype(file, allowed_filetype):
     (bitrate, or bitdepth/samplerate), verifies those against the file's metadata too.
     """
     current_filetype = file["filename"].split(".")[-1]
-    bitdepth = None
-    samplerate = None
-    bitrate = None
+    allowed_parts = allowed_filetype.split(" ", 1)
 
-    if "bitRate" in file:
-        bitrate = file["bitRate"]
-    if "sampleRate" in file:
-        samplerate = file["sampleRate"]
-    if "bitDepth" in file:
-        bitdepth = file["bitDepth"]
-
-    # Check if the types match up for the current files type and the current type from the config
-    if current_filetype == allowed_filetype.split(" ")[0]:
-        # Check if the current type from the config specifies other attributes than the filetype (bitrate etc)
-        if " " in allowed_filetype:
-            selected_attributes = allowed_filetype.split(" ")[1]
-            # If it is a bitdepth/samplerate pair instead of a simple bitrate
-            if "/" in selected_attributes:
-                selected_bitdepth = selected_attributes.split("/")[0]
-                try:
-                    selected_samplerate = str(int(float(selected_attributes.split("/")[1]) * 1000))
-                except (ValueError, IndexError):
-                    logger.warning("Invalid samplerate in selected_attributes")
-                    return False
-
-                if bitdepth and samplerate:
-                    if str(bitdepth) == str(selected_bitdepth) and str(samplerate) == str(selected_samplerate):
-                        return True
-                else:
-                    return False
-            # If it is a bitrate
-            else:
-                selected_bitrate = selected_attributes
-                if bitrate:
-                    if str(bitrate) == str(selected_bitrate):
-                        return True
-                else:
-                    return False
-        # If no bitrate or other info then it is a match so return true
-        else:
-            return True
-    else:
+    if current_filetype != allowed_parts[0]:
         return False
+    if len(allowed_parts) == 1:
+        return True  # No quality attributes specified, so the extension match is enough.
+
+    selected_attributes = allowed_parts[1]
+
+    # If it is a bitdepth/samplerate pair instead of a simple bitrate
+    if "/" in selected_attributes:
+        selected_bitdepth, selected_samplerate_raw = selected_attributes.split("/", 1)
+        try:
+            selected_samplerate = str(int(float(selected_samplerate_raw) * 1000))
+        except ValueError:
+            logger.warning("Invalid samplerate in selected_attributes")
+            return False
+
+        bitdepth = file.get("bitDepth")
+        samplerate = file.get("sampleRate")
+        if not bitdepth or not samplerate:
+            return False
+        return str(bitdepth) == str(selected_bitdepth) and str(samplerate) == str(selected_samplerate)
+
+    # If it is a bitrate
+    bitrate = file.get("bitRate")
+    if not bitrate:
+        return False
+    return str(bitrate) == selected_attributes
 
 
 def download_filter(allowed_filetype, directory):
