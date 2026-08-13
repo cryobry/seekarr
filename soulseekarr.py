@@ -11,6 +11,7 @@ import shutil
 import difflib
 import logging
 from datetime import datetime
+from urllib.parse import urljoin
 import copy
 from dataclasses import dataclass
 from typing import TypedDict
@@ -89,6 +90,7 @@ DEFAULT_LOGGING_CONF = {
 class LidarrConfig:
     api_key: str
     host_url: str
+    url_base: str
     download_dir: str
     disable_sync: bool
     sources: list[str] # missing, cutoff_unmet
@@ -158,6 +160,7 @@ class AppConfig:
         lidarr = LidarrConfig(
             api_key=require_config_value(env_override("lidarr", "api_key", lidarr_cfg.get("api_key")), "lidarr.api_key"),
             host_url=require_config_value(env_override("lidarr", "host_url", lidarr_cfg.get("host_url")), "lidarr.host_url"),
+            url_base=str(env_override("lidarr", "url_base", lidarr_cfg.get("url_base", "/"))),
             download_dir=require_config_value(env_override("lidarr", "download_dir", lidarr_cfg.get("download_dir")), "lidarr.download_dir"),
             disable_sync=bool(env_override("lidarr", "disable_sync", resolved_lidarr.get("disable_sync", False))),
             sources=as_list(env_override("lidarr", "sources", lidarr_cfg.get("sources", ["missing"])), lower=True),
@@ -1628,7 +1631,8 @@ def run_once(args) -> int:
 
         # Init API clients
         slskd = slskd_api.SlskdClient(host=cfg.slskd.host_url, api_key=cfg.slskd.api_key, url_base=cfg.slskd.url_base)
-        lidarr = LidarrAPI(cfg.lidarr.host_url, cfg.lidarr.api_key)
+        # pyarr has no separate url_base param, so fold it into host_url ourselves (mirrors slskd_api's host+url_base join)
+        lidarr = LidarrAPI(urljoin(f"{cfg.lidarr.host_url.rstrip('/')}/", cfg.lidarr.url_base.strip("/")), cfg.lidarr.api_key)
 
         # Init cache. The wide search returns all the data we need. This prevents us from hammering the users on the Soulseek network
         search_cache = {}
