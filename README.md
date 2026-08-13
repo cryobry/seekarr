@@ -65,7 +65,7 @@ and control where Soulseekarr runs and how often it checks for wanted releases.
 | Option | Description | Default |
 | --- | --- | --- |
 | `-c`, `--config-dir [PATH]` | Directory containing `config.yml` | Current working directory, or `/data` in Docker |
-| `-v`, `--var-dir [PATH]` | Directory for runtime files such as the lock file, logs, and failed-import denylist | Current working directory, or `/data` in Docker |
+| `-v`, `--var-dir [PATH]` | Directory for runtime files such as the lock file and logs | Current working directory, or `/data` in container |
 | `--no-lock-file` | Disable lock-file creation when running outside Docker | Lock file enabled |
 | `--interval SECONDS` | Loop forever and wait this many seconds between runs | `SCRIPT_INTERVAL`, then `300` in Docker, otherwise one run |
 
