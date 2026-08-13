@@ -712,34 +712,40 @@ def slskd_do_enqueue(username, files, file_dir):
     Each returned file dict is annotated with the tracking details (id, file_dir, username,
     size) needed to poll its download status later.
     """
-    downloads = []
     try:
         enqueue = slskd.transfers.enqueue(username=username, files=files)
     except Exception:
         logger.debug("Enqueue failed", exc_info=True)
         return None
-    if enqueue:
-        time.sleep(5)
-        try:
-            download_list = slskd.transfers.get_downloads(username=username)
-        except Exception:
-            logger.warning(f"Failed to get download status for {username} after enqueue", exc_info=True)
-            return None
-        for file in files:
-            for directory in download_list["directories"]:
-                if directory["directory"] == file_dir:
-                    for slskd_file in directory["files"]:
-                        if file["filename"] == slskd_file["filename"]:
-                            file_details = {}
-                            file_details["filename"] = file["filename"]
-                            file_details["id"] = slskd_file["id"]
-                            file_details["file_dir"] = file_dir
-                            file_details["username"] = username
-                            file_details["size"] = file["size"]
-                            downloads.append(file_details)
-        return downloads
-    else:
+    if not enqueue:
         return None
+
+    time.sleep(5)
+    try:
+        download_list = slskd.transfers.get_downloads(username=username)
+    except Exception:
+        logger.warning(f"Failed to get download status for {username} after enqueue", exc_info=True)
+        return None
+
+    directory = next((d for d in download_list["directories"] if d["directory"] == file_dir), None)
+    if directory is None:
+        return []
+
+    accepted_ids = {f["filename"]: f["id"] for f in directory["files"]}
+    downloads = []
+    for file in files:
+        slskd_id = accepted_ids.get(file["filename"])
+        if slskd_id is not None:
+            downloads.append(
+                {
+                    "filename": file["filename"],
+                    "id": slskd_id,
+                    "file_dir": file_dir,
+                    "username": username,
+                    "size": file["size"],
+                }
+            )
+    return downloads
 
 
 def slskd_download_status(downloads):
