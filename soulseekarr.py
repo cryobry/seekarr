@@ -10,10 +10,10 @@ import time
 import shutil
 import difflib
 import logging
-import json
 from datetime import datetime
 import copy
 from dataclasses import dataclass
+from typing import TypedDict
 import music_tag
 import slskd_api
 import yaml
@@ -138,8 +138,6 @@ class AppConfig:
     # Paths
     lock_file_path: str
     config_file_path: str
-    current_page_file_path: str
-    failed_import_denylist_file_path: str
 
     @classmethod
     def from_yaml(cls, data: dict, args, source: str | None = None) -> "AppConfig":
@@ -151,9 +149,8 @@ class AppConfig:
         lidarr_cfg: dict = data.get("lidarr") or {}
         slskd_cfg: dict = data.get("slskd") or {}
 
-        # Layer this source's overrides (top-level `missing`/`cutoff_unmet` blocks) over the
-        # top-level lidarr/slskd defaults. Called once per source in the run_once loop so the
-        # global cfg reflects the source currently being processed.
+        # Layer this source's overrides (top-level `missing`/`cutoff_unmet` blocks) over the top-level lidarr/slskd defaults.
+        # Called once per source in the run_once loop so the global cfg reflects the source currently being processed.
         source_cfg: dict = (data.get(source) or {}) if source else {}
         resolved_lidarr = {**lidarr_cfg, **(source_cfg.get("lidarr") or {})}
         resolved_slskd = {**slskd_cfg, **(source_cfg.get("slskd") or {})}
@@ -218,9 +215,24 @@ class AppConfig:
             slskd=slskd,
             lock_file_path=os.path.join(args.var_dir, ".soulseekarr.lock"),
             config_file_path=os.path.join(args.config_dir, "config.yml"),
-            current_page_file_path=os.path.join(args.var_dir, ".current_page.txt"),
-            failed_import_denylist_file_path=os.path.join(args.var_dir, "failed_imports.json"),
         )
+
+class WantedAlbum(TypedDict):
+    """A pruned Lidarr wanted-list record, keeping only the fields Soulseekarr reads.
+
+    Lidarr's raw wanted-list response nests far more per album (images, ratings, full release
+    media/tracks, statistics, etc.); trimming to this shape keeps memory use sane for large
+    libraries. See prune_wanted_record(). `artist` and `releases` are only ever read for their
+    `artistName`/`albumId`, so they're kept as plain dicts rather than their own TypedDicts.
+    """
+
+    id: int
+    artistId: int
+    artist: dict[str, str]  # {"artistName": str}
+    title: str
+    releaseDate: str
+    releases: list[dict[str, int]]  # [{"albumId": int}, ...]
+
 
 # ===== API Clients & Logging =====
 lidarr: LidarrAPI = None  # type: ignore[assignment]
@@ -233,9 +245,17 @@ search_cache: dict = {}
 folder_cache: dict = {}
 broken_user: list = []
 # Albums grabbed while Lidarr sync is disabled, so we don't regrab them on later loops
-# in the same run (Lidarr never learns about them, so it can't tell us itself). Not
-# persisted across restarts.
+# in the same run (Lidarr never learns about them, so it can't tell us itself).
 grabbed_albums: set = set()
+# Albums that failed Lidarr import, keyed by album id. In-memory only (not persisted to
+# disk), so it resets on process restart same as grabbed_albums.
+failed_import_denylist: dict = {}
+# search_type: random's per-source shuffle order and cursor.
+# Kept in memory only across --interval loop iterations within a process
+# A fresh process always starts a new shuffle cycle.
+random_order_state: dict = {}
+# search_type: incrementing's per-source next-chunk cursor.
+current_chunk_index: dict = {}
 
 
 def album_match(lidarr_tracks, slskd_tracks, username, filetype, album_name):
@@ -557,13 +577,12 @@ def filter_list(albums):
 
     Combines what used to be several separate filtering passes into one pass for clarity.
     """
-    temp_list = copy.deepcopy(albums)
+    temp_list = list(albums)
 
     if cfg.lidarr.failed_import_denylist:
-        import_denylist = load_failed_import_denylist(cfg.failed_import_denylist_file_path)
         filtered_temp = []
         for album in temp_list:
-            if str(album["id"]) in import_denylist:
+            if str(album["id"]) in failed_import_denylist:
                 logger.info(f"Skipping failed import album: {album['artist']['artistName']} - {album['title']} (ID: {album['id']})")
             else:
                 filtered_temp.append(album)
@@ -1032,7 +1051,6 @@ def trigger_lidarr_import(album_data, failed_grab):
             failed_grab.append(lidarr.get_album(album_data["album_id"]))
             if cfg.lidarr.failed_import_denylist:
                 add_to_failed_import_denylist(
-                    cfg.failed_import_denylist_file_path,
                     album_data["album_id"],
                     album_data["artist"],
                     album_data["title"],
@@ -1412,27 +1430,58 @@ def setup_logging(config: dict, var_dir: str) -> None:
         logger.info(f"Logging to file: {log_file_path}")
 
 
-def get_current_page(path: str, default_page=1) -> int:
-    """Read the persisted "incrementing_page" cursor from `path`, creating it with `default_page` if missing."""
-    if os.path.exists(path):
-        with open(path, "r") as file:
-            page_string = file.read().strip()
-
-            if page_string:
-                return int(page_string)
-            else:
-                with open(path, "w") as file:
-                    file.write(str(default_page))
-                return default_page
-    else:
-        with open(path, "w") as file:
-            file.write(str(default_page))
-        return default_page
+def prune_wanted_record(raw: dict) -> WantedAlbum:
+    """Trim a raw Lidarr wanted-list record down to the fields Soulseekarr actually reads."""
+    return {
+        "id": raw["id"],
+        "artistId": raw["artistId"],
+        "artist": {"artistName": raw["artist"]["artistName"]},
+        "title": raw["title"],
+        "releaseDate": raw["releaseDate"],
+        "releases": [{"albumId": release["albumId"]} for release in raw.get("releases", [])],
+    }
 
 
-def update_current_page(path: str, page: str) -> None:
-    with open(path, "w") as file:
-        file.write(page)
+def get_random_chunk(source: str, all_records: list[WantedAlbum]) -> list[WantedAlbum]:
+    """Return the next chunk of `all_records` from a per-source shuffled cycle, held in the
+    module-level `random_order_state` so every record gets a turn before the list is reshuffled
+    and the cycle starts over. Only persists in memory for the life of the process (see
+    `random_order_state`'s comment) - it's regenerated from scratch on the next process start.
+    """
+    chunk_size = max(1, cfg.lidarr.chunk_size)
+    records_by_id = {record["id"]: record for record in all_records}
+
+    source_state = random_order_state.get(source) or {}
+    # Drop ids no longer wanted (already grabbed, imported, or dequeued elsewhere).
+    order = [album_id for album_id in source_state.get("order", []) if album_id in records_by_id]
+    index = source_state.get("index", 0)
+
+    new_ids = [album_id for album_id in records_by_id if album_id not in order]
+    if new_ids:
+        random.shuffle(new_ids)
+        order.extend(new_ids)
+
+    if not order:
+        return []
+
+    if index >= len(order):
+        index = 0
+
+    chunk_ids = order[index : index + chunk_size]
+    index += chunk_size
+    if index >= len(order):
+        # Every record has had a turn this cycle; reshuffle and start the next one.
+        index = 0
+        random.shuffle(order)
+
+    random_order_state[source] = {"order": order, "index": index}
+
+    return [records_by_id[album_id] for album_id in chunk_ids]
+
+
+# Page size used only for the internal Lidarr API calls that bulk-fetch the wanted list;
+# unrelated to lidarr.chunk_size, which controls how many records get processed per run.
+WANTED_API_PAGE_SIZE = 250
 
 
 def get_records(source: str) -> list:
@@ -1512,7 +1561,6 @@ def get_records(source: str) -> list:
                 page += 1
 
         queued_album_ids = []
-
         for record in current_queue:
             if "albumId" in record:
                 queued_album_ids.append(record["albumId"])
@@ -1534,41 +1582,20 @@ def get_records(source: str) -> list:
             wanted_records = []
     except PyarrError as ex:
         logger.error(f"Failed to get queue details so not filtering based on queue: {ex}")
-
-    return wanted_records
-
-
-def load_failed_import_denylist(file_path):
-    if not os.path.exists(file_path):
-        return {}
-    try:
-        with open(file_path, "r") as file:
-            return json.load(file)
-    except (json.JSONDecodeError, IOError) as ex:
-        logger.warning(f"Error loading failed import denylist: {ex}. Starting with empty denylist.")
-        return {}
+        return records
 
 
-def save_failed_import_denylist(file_path, denylist):
-    try:
-        with open(file_path, "w") as file:
-            json.dump(denylist, file, indent=2)
-    except IOError as ex:
-        logger.error(f"Error saving failed import denylist: {ex}")
-
-
-def add_to_failed_import_denylist(file_path, album_id, artist, title, folder_path=None):
-    denylist = load_failed_import_denylist(file_path)
+def add_to_failed_import_denylist(album_id, artist, title, folder_path=None):
+    global failed_import_denylist
     album_key = str(album_id)
-    if album_key not in denylist:
-        denylist[album_key] = {
+    if album_key not in failed_import_denylist:
+        failed_import_denylist[album_key] = {
             "album_id": album_id,
             "artist": artist,
             "title": title,
             "failed_at": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
             "folder_path": folder_path,
         }
-        save_failed_import_denylist(file_path, denylist)
         logger.info(f"Added to failed import denylist: {artist} - {title} (ID: {album_id})")
 
 
