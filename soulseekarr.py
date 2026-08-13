@@ -621,6 +621,9 @@ def search_for_album(album):
 
     if query != original_query:
         logger.info(f"Filtered search query: '{original_query}' -> '{query}'")
+    if not query:
+        logger.warning(f"Skipping search for {artist_name} - {album_title}: query is empty after filtering")
+        return False
 
     logger.info(f"Searching for album: {query}")
     try:
@@ -650,19 +653,18 @@ def search_for_album(album):
         while True:
             if slskd.searches.state(search["id"], False)["state"] != "InProgress":  # Added False here as we don't want the search results here. Just the state.
                 break
-            time.sleep(1)
             if (time.time() - start_time) > cfg.slskd.timeout:
                 logger.error("Failed to perform search via SLSKD due to timeout on search results.")
-                cleanup_search()
                 return False
+            time.sleep(1)
 
         search_results = slskd.searches.search_responses(search["id"])  # We use this API call twice. Let's just cache it locally.
         logger.info(f"Search returned {len(search_results)} results")
-        cleanup_search()
     except Exception:
         logger.exception(f"Failed to perform search via SLSKD: {query}")
-        cleanup_search()
         return False
+    finally:
+        cleanup_search()
 
     if not search_results:
         return False
@@ -670,20 +672,19 @@ def search_for_album(album):
     if album_id not in search_cache:
         search_cache[album_id] = {}  # This is so we can check for matches we missed or if a user goes offline during our download
 
-    for result in search_results:  # Switching to cached version. One less API call
+    for result in search_results:  # Switching to cached version (one less API call)
         username = result["username"]
         if username not in search_cache[album_id]:
             # If we don't currently have a cache for a user set one up
             search_cache[album_id][username] = {}
+
         logger.info(f"Caching and truncating results for user: {username}")
-        init_files = result["files"]  # init_files short for initial files. Before truncating
-        # Search the returned files and only cache files that are of the allowed_filetypes
-        for file in init_files:
-            file_dir = file["filename"].rsplit("\\", 1)[0]  # split dir/filenames on \
+        for file in result["files"]:
+            file_dir = file["filename"].rsplit("\\", 1)[0]
             for allowed_filetype in cfg.slskd.allowed_filetypes:
                 if verify_filetype(file, allowed_filetype):  # Check the filename for an allowed type
                     if allowed_filetype not in search_cache[album_id][username]:
-                        search_cache[album_id][username][allowed_filetype] = []  # Init the cache for this allowed filetype
+                        search_cache[album_id][username][allowed_filetype] = [] # Init the cache for this allowed filetype
                     if file_dir not in search_cache[album_id][username][allowed_filetype]:
                         search_cache[album_id][username][allowed_filetype].append(file_dir)
     return True
