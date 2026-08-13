@@ -44,9 +44,10 @@ def as_list(value, lower: bool = False) -> list[str]:
 
 
 def env_override(section: str, key: str, value):
-    """
-    Override a resolved config value with an env var named "<SECTION>_<KEY>" (matching the YAML
-    path, e.g. lidarr.api_key -> LIDARR_API_KEY), coercing it to match the existing value's type.
+    """Override a resolved config value with an env var named "<SECTION>_<KEY>".
+
+    Matches the YAML path (e.g. lidarr.api_key -> LIDARR_API_KEY), coercing the env var to
+    match the existing value's type.
     """
     raw = os.environ.get(f"{section}_{key}".upper())
     if raw is None:
@@ -141,6 +142,11 @@ class AppConfig:
 
     @classmethod
     def from_yaml(cls, data: dict, args, source: str | None = None) -> "AppConfig":
+        """Build an AppConfig from parsed config.yml data, env var overrides, and CLI args.
+
+        Layers this source's overrides (top-level `missing`/`cutoff_unmet` blocks) over the
+        top-level `lidarr`/`slskd` defaults, then applies per-key env var overrides.
+        """
         lidarr_cfg: dict = data.get("lidarr") or {}
         slskd_cfg: dict = data.get("slskd") or {}
 
@@ -226,6 +232,12 @@ grabbed_albums: set = set()
 
 
 def album_match(lidarr_tracks, slskd_tracks, username, filetype, album_name):
+    """Check whether a user's Soulseek files are a full-album match for the given Lidarr tracks.
+
+    Compares each Lidarr track title against every candidate filename with fuzzy string
+    matching (plus several filename-cleanup heuristics), requiring every track to clear
+    `cfg.slskd.minimum_match_ratio` for the album to count as matched.
+    """
     counted = []
     total_match = 0.0
     filetype_ext = filetype.split(" ")[0]
@@ -314,6 +326,7 @@ def sanitize_folder_name(folder_name):
 
 
 def cancel_and_delete(files):
+    """Cancel each file's in-progress slskd download and remove its local download folder."""
     for file in files:
         try:
             slskd.transfers.cancel_download(username=file["username"], id=file["id"])
@@ -347,6 +360,12 @@ def release_trackcount_mode(releases):
 
 
 def choose_release(artist_name, releases):
+    """Pick the best release to search for from an album's list of Lidarr releases.
+
+    Prefers the release manually selected in Lidarr (if `use_selected_lidarr_release`), then
+    the first release matching the accepted countries/formats/status/track-count settings,
+    falling back to the most common track count or simply the first release otherwise.
+    """
     if cfg.lidarr.use_selected_lidarr_release:
         for release in releases:
             if release.get("monitored"):
@@ -396,6 +415,11 @@ def choose_release(artist_name, releases):
 
 
 def verify_filetype(file, allowed_filetype):
+    """Check whether a slskd search result file matches an `allowed_filetypes` config entry.
+
+    Matches on file extension, and if the config entry also specifies quality attributes
+    (bitrate, or bitdepth/samplerate), verifies those against the file's metadata too.
+    """
     current_filetype = file["filename"].split(".")[-1]
     bitdepth = None
     samplerate = None
@@ -443,11 +467,10 @@ def verify_filetype(file, allowed_filetype):
 
 
 def download_filter(allowed_filetype, directory):
-    """
-    Filters the directory listing from SLSKD using the filetype whitelist.
-    If not using the whitelist it will only return the audio files of the allowed filetype.
-    This is to prevent downloading m3u,cue,txt,jpg,etc. files that are sometimes stored in
-    the same folders as the music files.
+    """Filter a slskd directory listing down to the allowed filetype (and whitelist, if enabled).
+
+    This prevents downloading m3u/cue/txt/jpg/etc. files that are sometimes stored alongside
+    the music files in the same folder.
     """
     logging.debug("download_filtering")
     if cfg.slskd.filtering:
@@ -479,9 +502,7 @@ def download_filter(allowed_filetype, directory):
 
 
 def check_for_match(tracks, allowed_filetype, file_dirs, username, album_name):
-    """
-    Does the actual match checking on a single disk/album.
-    """
+    """Fetch (and cache) a user's file listing for each candidate folder and check for an album match."""
     if username in broken_user:
         return False, {}, ""
     for file_dir in file_dirs:
@@ -542,9 +563,9 @@ def is_blacklisted(title: str) -> bool:
 
 
 def filter_list(albums):
-    """
-    Helper to do all the various filtering in one go and in one place. Same net effect as the previous multi-stage approach
-    Just neater and easier to work on.
+    """Apply the failed-import denylist, disable_sync grabbed-albums, and title blacklist filters.
+
+    Combines what used to be several separate filtering passes into one pass for clarity.
     """
     temp_list = copy.deepcopy(albums)
 
@@ -584,6 +605,12 @@ def filter_list(albums):
 
 
 def search_for_album(album):
+    """Search slskd for an album, poll until the search completes, and cache matching results.
+
+    Builds the search query (optionally prepending the artist name and stripping blacklisted
+    words), waits for the slskd search to finish or time out, and populates `search_cache` with
+    each result's files grouped by user and allowed filetype.
+    """
     album_title = album["title"]
     artist_name = album["artist"]["artistName"]
     album_id = album["id"]
@@ -647,7 +674,7 @@ def search_for_album(album):
         cleanup_search()
         return False
 
-    if not len(search_results) > 0:
+    if not search_results:
         return False
 
     if album_id not in search_cache:
@@ -673,9 +700,10 @@ def search_for_album(album):
 
 
 def slskd_do_enqueue(username, files, file_dir):
-    """
-    Takes a list of files to download and returns a list of files that were successfully added to the download queue
-    It also adds to each file the details needed to track that specific file.
+    """Enqueue files for download from a user and return the ones slskd accepted.
+
+    Each returned file dict is annotated with the tracking details (id, file_dir, username,
+    size) needed to poll its download status later.
     """
     downloads = []
     try:
@@ -708,9 +736,7 @@ def slskd_do_enqueue(username, files, file_dir):
 
 
 def slskd_download_status(downloads):
-    """
-    Takes a list of files and gets the status of each file and packs it into the file object.
-    """
+    """Fetch and attach the current slskd transfer status to each file dict in `downloads`."""
     ok = True
     for file in downloads:
         try:
@@ -724,9 +750,10 @@ def slskd_download_status(downloads):
 
 
 def downloads_all_done(downloads):
-    """
-    Checks the status of all the files in an album and returns a flag if all done as well
-    as returning a list of files with errors to check and how many files are in "Queued, Remotely"
+    """Summarize an album's download progress from its files' current statuses.
+
+    Returns (all_done, error_list, remote_queue_count), where error_list is None if there are
+    no failed files.
     """
     all_done = True
     error_list = []
@@ -751,10 +778,7 @@ def downloads_all_done(downloads):
 
 
 def try_enqueue(all_tracks, results, allowed_filetype, artist_name, album_name):
-    """
-    Single album match and enqueue.
-    Iterates over all users and enqueues a found match
-    """
+    """Try to find and enqueue a single-disk album match from any user in `results`."""
     for username in results:
         if allowed_filetype not in results[username]:
             continue
@@ -779,10 +803,10 @@ def try_enqueue(all_tracks, results, allowed_filetype, artist_name, album_name):
 
 
 def try_multi_enqueue(release, all_tracks, results, allowed_filetype, artist_name, album_name):
-    """
-    This is the multi-disk/media path for locating and enqueueing an album
-    It does a flat search first. Then it does a split search.
-    Otherwise it's basically the same as the single album search.
+    """Try to find and enqueue a multi-disk album match, sourcing each disk independently.
+
+    Requires every disk in the release to be matched (by any user) before enqueueing; if any
+    disk can't be sourced, the whole attempt fails with nothing downloaded.
     """
     split_release = []
     for media in release["media"]:
@@ -854,10 +878,10 @@ def try_multi_enqueue(release, all_tracks, results, allowed_filetype, artist_nam
 
 
 def find_download(album, grab_list):
-    """
-    This does the main loop over search results and user directories
-    It has two paths it can take. One is the "single album" path
-    The other is the multi-media path.
+    """Find a download source for `album` by trying every allowed filetype and release.
+
+    For each quality, tries the single-disk match path first, falling back to the multi-disk
+    path for multi-media releases. Populates `grab_list[album_id]` and returns True on success.
     """
     album_id = album["id"]
     artist_name = album["artist"]["artistName"]
@@ -904,6 +928,12 @@ def find_download(album, grab_list):
 
 
 def search_and_queue(albums):
+    """Search and enqueue every album in `albums`, respecting `minimum_search_interval`.
+
+    Returns (grab_list, failed_search, failed_grab): `grab_list` holds the enqueued downloads,
+    `failed_search` holds albums with no slskd search results, and `failed_grab` holds albums
+    that had results but no match/enqueue succeeded.
+    """
     grab_list = {}
     failed_grab = []
     failed_search = []
@@ -926,6 +956,13 @@ def search_and_queue(albums):
 
 
 def process_completed_album(album_data, failed_grab):
+    """Move a fully-downloaded album into its import folder and trigger a Lidarr import.
+
+    Renames/moves the downloaded files into a single folder, tags them, and asks Lidarr to
+    scan it. Rolls back the moved files if anything fails partway through, and records the
+    album in `failed_grab` (and the failed-import denylist) if the Lidarr import itself fails.
+    If `disable_sync` is set, skips the Lidarr import entirely and just tracks the grab.
+    """
     if cfg.slskd.rename_download_folders is True:
         import_folder_name = sanitize_folder_name(album_data["artist"] + " - " + album_data["title"] + " (" + album_data["year"] + ")")
     else:
@@ -1029,6 +1066,12 @@ def process_completed_album(album_data, failed_grab):
 
 
 def monitor_downloads(grab_list, failed_grab):
+    """Poll slskd until every album in `grab_list` finishes, errors out, or times out.
+
+    Handles per-file hard errors (cancelled/timed out/errored/aborted) and rejections by
+    requeuing individual files (up to a retry limit) before giving up on the whole album, and
+    hands completed albums off to `process_completed_album`.
+    """
     MAX_FILE_RETRIES = 4  # Max requeue attempts per file for hard errors (Errored, Cancelled, etc.)
 
     def delete_album(reason):
@@ -1050,8 +1093,8 @@ def monitor_downloads(grab_list, failed_grab):
         return False
 
     def handle_hard_error(album_id, file, problems):
-        """
-        Handle Cancelled/TimedOut/Errored/Aborted files.
+        """Handle Cancelled/TimedOut/Errored/Aborted files.
+
         Returns True if the album was deleted (caller should stop processing this album).
         """
         if len(problems) == len(grab_list[album_id]["files"]):
@@ -1071,11 +1114,11 @@ def monitor_downloads(grab_list, failed_grab):
         return False
 
     def handle_rejected(album_id, file, problems):
-        """
-        Handle Rejected files. Returns True if the album was deleted or a requeue was
-        attempted (caller should stop processing this album this iteration).
-        Rejected files often indicate grab limits; we wait for all other files to reach
-        a stable state before requeuing.
+        """Handle Rejected files.
+
+        Returns True if the album was deleted or a requeue was attempted (caller should stop
+        processing this album this iteration). Rejected files often indicate grab limits; we
+        wait for all other files to reach a stable state before requeuing.
         """
         files = grab_list[album_id]["files"]
         if len(problems) == len(files):
@@ -1148,15 +1191,10 @@ def monitor_downloads(grab_list, failed_grab):
 
 
 def grab_most_wanted(albums):
-    """
-    This is the "main loop" that calls all the functions to do all the work.
-    Basic flow per item is as follows:
-    Perform coarse search
-    Check search results for a match
-    enqueue download
-    After that has happened for all the downloads it then shifts to monitoring the downloads:
-    Monitor download and perform retries and/or requeues.
-    When all completed, call lidarr to import
+    """Search, enqueue, monitor, and import every album in `albums`.
+
+    Searches and enqueues downloads for all albums first, then monitors and imports them as a
+    batch. Returns the total count of albums that failed to search or failed to grab.
     """
 
     grab_list, failed_search, failed_grab = search_and_queue(albums)
@@ -1187,6 +1225,7 @@ def grab_most_wanted(albums):
     return count
 
 def move_failed_import(src_path):
+    """Move a failed Lidarr import's folder into a `failed_imports` subfolder, avoiding name clashes."""
     failed_imports_dir = os.path.join(cfg.slskd.download_dir, "failed_imports")
 
     if not os.path.exists(failed_imports_dir):
@@ -1213,10 +1252,11 @@ def is_docker():
 
 
 def migrate_soularr_ini_config(config_dir: str) -> bool:
-    """
-    One-time migration for users coming from Soularr: if config.yml is missing but a Soularr
-    config.ini is present, translate it into a new config.yml (mapped to Soulseekarr's schema) so
-    the run can proceed without manual reconfiguration. Returns True if a config.yml was written.
+    """One-time migration from a legacy Soularr config.ini to Soulseekarr's config.yml.
+
+    If config.yml is missing but a Soularr config.ini is present, translates it into a new
+    config.yml (mapped to Soulseekarr's schema) so the run can proceed without manual
+    reconfiguration. Returns True if a config.yml was written.
     """
     ini_path = os.path.join(config_dir, "config.ini")
     yaml_path = os.path.join(config_dir, "config.yml")
@@ -1321,6 +1361,11 @@ def remove_lock_file(path: str) -> None:
 
 
 def setup_logging(config: dict, var_dir: str) -> None:
+    """Configure the root logger from the `logging` config section, resetting prior handlers.
+
+    Always logs to stdout, and additionally to a rotating file in `var_dir` if `log_to_file`
+    is enabled.
+    """
     from logging.handlers import RotatingFileHandler
 
     log_config = config.get("logging") or DEFAULT_LOGGING_CONF
@@ -1346,6 +1391,7 @@ def setup_logging(config: dict, var_dir: str) -> None:
 
 
 def get_current_page(path: str, default_page=1) -> int:
+    """Read the persisted "incrementing_page" cursor from `path`, creating it with `default_page` if missing."""
     if os.path.exists(path):
         with open(path, "r") as file:
             page_string = file.read().strip()
@@ -1368,6 +1414,11 @@ def update_current_page(path: str, page: str) -> None:
 
 
 def get_records(source: str) -> list:
+    """Fetch Lidarr's wanted records for `source` ("missing" or "cutoff_unmet"), paginated per `lidarr.type`.
+
+    Applies the configured pagination strategy (`all`, `incrementing_page`, or `first_page`),
+    then filters out any records that are already in Lidarr's download queue.
+    """
     missing = source == "missing"
     try:
         wanted = lidarr.get_wanted(
@@ -1595,10 +1646,11 @@ def run_once(args) -> int:
 
 
 def get_interval(args) -> int:
-    """
-    CLI --interval takes priority, then the SCRIPT_INTERVAL env var. Docker defaults to
-    300s if neither is set (matching the old run.sh default); non-Docker defaults to
-    running once, preserving manual/cron usage.
+    """Resolve the run interval in seconds from --interval, SCRIPT_INTERVAL, or a default.
+
+    CLI `--interval` takes priority, then the `SCRIPT_INTERVAL` env var. Docker defaults to
+    300s if neither is set (matching the old run.sh default); non-Docker defaults to running
+    once, preserving manual/cron usage.
     """
     if args.interval is not None:
         return args.interval
@@ -1612,6 +1664,7 @@ def get_interval(args) -> int:
 
 
 def main():
+    """Parse CLI arguments and run Soulseekarr once or on a loop, per --interval/SCRIPT_INTERVAL."""
     global cfg, lidarr, slskd, logger, search_cache, folder_cache, broken_user
 
     # Allow some overrides to be passed to the script
