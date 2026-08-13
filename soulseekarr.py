@@ -235,6 +235,14 @@ class WantedAlbum(TypedDict):
     releases: list[dict[str, int]]  # [{"albumId": int}, ...]
 
 
+class FailedImport(TypedDict):
+    """A denylisted album that failed Lidarr import, plus bookkeeping about the failure."""
+
+    album: WantedAlbum
+    failed_at: str
+    folder_path: str | None
+
+
 # ===== API Clients & Logging =====
 lidarr: LidarrAPI = None  # type: ignore[assignment]
 slskd: slskd_api.SlskdClient = None  # type: ignore[assignment]
@@ -248,9 +256,9 @@ broken_user: list = []
 # Albums grabbed while Lidarr sync is disabled, so we don't regrab them on later loops
 # in the same run (Lidarr never learns about them, so it can't tell us itself).
 grabbed_albums: set = set()
-# Albums that failed Lidarr import, keyed by album id. In-memory only (not persisted to
+# Albums that failed Lidarr import, keyed by str(album id). In-memory only (not persisted to
 # disk), so it resets on process restart same as grabbed_albums.
-failed_import_denylist: dict = {}
+failed_import_denylist: dict[str, FailedImport] = {}
 # Not-yet-processed chunks per source, built from one Lidarr fetch and handed out one chunk
 # per get_records() call. Refilled with a fresh Lidarr fetch once a source's list empties, so
 # a full pass over the wanted list always ends with the next chunk coming from up-to-date
@@ -1052,14 +1060,10 @@ def trigger_lidarr_import(album_data, failed_grab):
 
         if "Failed" in current_task["message"]:
             folder_path = move_failed_import(current_task["body"]["path"])
-            failed_grab.append(lidarr.get_album(album_data["album_id"]))
+            raw_album = lidarr.get_album(album_data["album_id"])
+            failed_grab.append(raw_album)
             if cfg.lidarr.failed_import_denylist:
-                add_to_failed_import_denylist(
-                    album_data["album_id"],
-                    album_data["artist"],
-                    album_data["title"],
-                    folder_path,
-                )
+                add_to_failed_import_denylist(prune_wanted_record(raw_album), folder_path)
     except Exception:
         logger.exception("Error printing lidarr task message")
         logger.error(current_task)
@@ -1570,18 +1574,15 @@ def filter_queued_records(records: list[WantedAlbum]) -> list[WantedAlbum]:
         return records
 
 
-def add_to_failed_import_denylist(album_id, artist, title, folder_path=None):
-    global failed_import_denylist
-    album_key = str(album_id)
+def add_to_failed_import_denylist(album: WantedAlbum, folder_path: str | None = None) -> None:
+    album_key = str(album["id"])
     if album_key not in failed_import_denylist:
         failed_import_denylist[album_key] = {
-            "album_id": album_id,
-            "artist": artist,
-            "title": title,
+            "album": album,
             "failed_at": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
             "folder_path": folder_path,
         }
-        logger.info(f"Added to failed import denylist: {artist} - {title} (ID: {album_id})")
+        logger.info(f"Added to failed import denylist: {album['artist']['artistName']} - {album['title']} (ID: {album['id']})")
 
 
 def run_once(args) -> int:
