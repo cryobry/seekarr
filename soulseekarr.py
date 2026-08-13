@@ -1589,7 +1589,8 @@ def run_once(args) -> int:
                 lock_file.write("locked")
 
         if not os.path.exists(config_file_path):
-            migrate_soularr_ini_config(args.config_dir)
+            if migrate_soularr_ini_config(args.config_dir):
+                return 0
 
         if os.path.exists(config_file_path):
             with open(config_file_path, "r") as config_file:
