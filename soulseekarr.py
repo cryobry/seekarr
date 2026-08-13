@@ -366,6 +366,14 @@ def release_trackcount_mode(releases):
     return most_common_trackcount
 
 
+def release_format_accepted(release):
+    """Check a release's format against `accepted_formats`, unwrapping multi-disc prefixes (e.g. "2xCD" -> "CD")."""
+    fmt = release["format"]
+    if fmt[1] == "x" and cfg.lidarr.allow_multi_disc:
+        fmt = fmt.split("x", 1)[1]
+    return fmt in cfg.lidarr.accepted_formats
+
+
 def choose_release(artist_name, releases):
     """Pick the best release to search for from an album's list of Lidarr releases.
 
@@ -383,21 +391,10 @@ def choose_release(artist_name, releases):
 
     for release in releases:
         country = release["country"][0] if release["country"] else None
+        region_ok = cfg.lidarr.skip_region_check or country in cfg.lidarr.accepted_countries
+        track_count_ok = not cfg.lidarr.use_most_common_tracknum or release["trackCount"] == most_common_trackcount
 
-        if release["format"][1] == "x" and cfg.lidarr.allow_multi_disc:
-            format_accepted = release["format"].split("x", 1)[1] in cfg.lidarr.accepted_formats
-        else:
-            format_accepted = release["format"] in cfg.lidarr.accepted_formats
-
-        if cfg.lidarr.use_most_common_tracknum:
-            if release["trackCount"] == most_common_trackcount:
-                track_count_bool = True
-            else:
-                track_count_bool = False
-        else:
-            track_count_bool = True
-
-        if (cfg.lidarr.skip_region_check or country in cfg.lidarr.accepted_countries) and format_accepted and release["status"] == "Official" and track_count_bool:
+        if region_ok and release_format_accepted(release) and release["status"] == "Official" and track_count_ok:
             logger.info(
                 ", ".join(
                     [
