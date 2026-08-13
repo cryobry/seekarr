@@ -137,9 +137,7 @@ class SlskdConfig:
 class AppConfig:
     lidarr: LidarrConfig
     slskd: SlskdConfig
-    # Paths
     lock_file_path: str
-    config_file_path: str
 
     @classmethod
     def from_yaml(cls, data: dict, args, source: str | None = None) -> "AppConfig":
@@ -218,7 +216,6 @@ class AppConfig:
             lidarr=lidarr,
             slskd=slskd,
             lock_file_path=os.path.join(args.var_dir, ".soulseekarr.lock"),
-            config_file_path=os.path.join(args.config_dir, "config.yml"),
         )
 
 class WantedAlbum(TypedDict):
@@ -254,12 +251,11 @@ grabbed_albums: set = set()
 # Albums that failed Lidarr import, keyed by album id. In-memory only (not persisted to
 # disk), so it resets on process restart same as grabbed_albums.
 failed_import_denylist: dict = {}
-# search_type: random's per-source shuffle order and cursor.
-# Kept in memory only across --interval loop iterations within a process
-# A fresh process always starts a new shuffle cycle.
-random_order_state: dict = {}
-# search_type: incrementing's per-source next-chunk cursor.
-current_chunk_index: dict = {}
+# Not-yet-processed chunks per source, built from one Lidarr fetch and handed out one chunk
+# per get_records() call. Refilled with a fresh Lidarr fetch once a source's list empties, so
+# a full pass over the wanted list always ends with the next chunk coming from up-to-date
+# data. In memory only, so a fresh process always starts with an empty queue.
+pending_chunks: dict[str, list[list[WantedAlbum]]] = {}
 
 
 def album_match(lidarr_tracks, slskd_tracks, username, filetype, album_name):
