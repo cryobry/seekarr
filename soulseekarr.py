@@ -486,7 +486,7 @@ def download_filter(allowed_filetype, directory):
     This prevents downloading m3u/cue/txt/jpg/etc. files that are sometimes stored alongside
     the music files in the same folder.
     """
-    logging.debug("download_filtering")
+    logger.debug("download_filtering")
     if cfg.slskd.filtering:
         whitelist = []  # Init an empty list to take just the allowed_filetype
         if cfg.slskd.use_extension_whitelist:
@@ -1589,12 +1589,12 @@ def filter_queued_records(records: list[WantedAlbum]) -> list[WantedAlbum]:
         for record in records:
             for release in record["releases"]:
                 if release["albumId"] in queued_album_ids:
-                    logging.info(f"Skipping record '{record['title']}' because it's already in download queue")
+                    logger.info(f"Skipping record '{record['title']}' because it's already in download queue")
                     break
             else:  # This only runs if the loop is broken out of. Saves on all the boolean found= stuff
                 not_queued.append(record)
         if not not_queued:
-            logging.info("No records wanted that arent already queued")
+            logger.info("No records wanted that arent already queued")
         return not_queued
     except PyarrError as ex:
         logger.error(f"Failed to get queue details so not filtering based on queue: {ex}")
@@ -1673,7 +1673,7 @@ def run_once(args) -> int:
             # Re-resolve cfg for this source so its accepted_formats/allowed_filetypes
             # overrides (and any future per-source settings) apply for this loop only.
             cfg = AppConfig.from_yaml(raw_config, args, source=source)
-            logging.debug(f"Getting records from {source}")
+            logger.debug(f"Getting records from {source}")
             try:
                 records = get_records(source)
             except ValueError as ex:
