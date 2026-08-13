@@ -1731,8 +1731,6 @@ def get_interval(args) -> int:
 
 def main():
     """Parse CLI arguments and run Soulseekarr once or on a loop, per --interval/SCRIPT_INTERVAL."""
-    global cfg, lidarr, slskd, logger, search_cache, folder_cache, broken_user
-
     # Allow some overrides to be passed to the script
     parser = argparse.ArgumentParser(description="""Soulseekarr reads all of your "wanted" albums/artists from Lidarr and downloads them using Slskd""")
 
