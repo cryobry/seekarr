@@ -1066,13 +1066,13 @@ def tag_album_files(files, artist, title):
             logger.exception(f"Error writing tags for: {file['import_path']}")
 
 
-def trigger_lidarr_import(album_data: GrabbedAlbum, failed_grab):
+def trigger_lidarr_import(album: GrabbedAlbum, failed_grab):
     """Ask Lidarr to scan the import folder, wait for the command to finish, and record failures."""
     command = lidarr.post_command(
         name="DownloadedAlbumsScan",
-        path=album_data.import_folder,
+        path=album.import_folder,
     )  # Album all tagged up and in a correctly named folder. This should work more reliably
-    logger.info(f"Starting Lidarr import for: {album_data.title} ID: {command['id']}")
+    logger.info(f"Starting Lidarr import for: {album.title} ID: {command['id']}")
 
     while True:
         current_task = lidarr.get_command(command["id"])
@@ -1085,7 +1085,7 @@ def trigger_lidarr_import(album_data: GrabbedAlbum, failed_grab):
 
         if "Failed" in current_task["message"]:
             folder_path = move_failed_import(current_task["body"]["path"])
-            raw_album = lidarr.get_album(album_data.album_id)
+            raw_album = lidarr.get_album(album.album_id)
             failed_grab.append(raw_album)
             if cfg.lidarr.failed_import_denylist:
                 add_to_failed_import_denylist(prune_wanted_record(raw_album), folder_path)
@@ -1094,7 +1094,7 @@ def trigger_lidarr_import(album_data: GrabbedAlbum, failed_grab):
         logger.error(current_task)
 
 
-def process_completed_album(album_data, failed_grab):
+def process_completed_album(album: GrabbedAlbum, failed_grab):
     """Move a fully-downloaded album into its import folder and trigger a Lidarr import.
 
     Renames/moves the downloaded files into a single folder, tags them, and asks Lidarr to
@@ -1103,22 +1103,22 @@ def process_completed_album(album_data, failed_grab):
     If `disable_sync` is set, skips the Lidarr import entirely and just tracks the grab.
     """
     if cfg.slskd.rename_download_folders is True:
-        import_folder_name = sanitize_folder_name(album_data.artist + " - " + album_data.title + " (" + album_data.year + ")")
+        import_folder_name = sanitize_folder_name(album.artist + " - " + album.title + " (" + album.year + ")")
     else:
-        import_folder_name = album_data.files[0]["file_dir"].rstrip("\\/").rsplit("\\", 1)[-1]
+        import_folder_name = album.files[0]["file_dir"].rstrip("\\/").rsplit("\\", 1)[-1]
     import_folder_fullpath = os.path.join(cfg.slskd.download_dir, import_folder_name)
-    album_data.import_folder = os.path.join(cfg.lidarr.download_dir, import_folder_name)
+    album.import_folder = os.path.join(cfg.lidarr.download_dir, import_folder_name)
 
     if not os.path.exists(import_folder_fullpath):
         os.mkdir(import_folder_fullpath)
 
-    success, rm_dirs = move_album_files(album_data.files, import_folder_fullpath)
+    success, rm_dirs = move_album_files(album.files, import_folder_fullpath)
     if not success:
         try:
             os.rmdir(import_folder_fullpath)
         except OSError:
             logger.warning(f"Could not remove temp import directory {import_folder_fullpath}")
-        failed_grab.append(lidarr.get_album(album_data.album_id))
+        failed_grab.append(lidarr.get_album(album.album_id))
         return
 
     for rm_dir in rm_dirs:
@@ -1129,13 +1129,13 @@ def process_completed_album(album_data, failed_grab):
                 logger.warning(f"Skipping removal of {rm_dir} because it's not empty.")
 
     if cfg.lidarr.disable_sync:
-        logger.info(f"Sync disabled. Skipping Lidarr import of {album_data.artist} - {album_data.title}")
-        grabbed_albums.add(album_data.album_id)
+        logger.info(f"Sync disabled. Skipping Lidarr import of {album.artist} - {album.title}")
+        grabbed_albums.add(album.album_id)
         return
 
-    logger.info(f"Attempting Lidarr import of {album_data.artist} - {album_data.title}")
-    tag_album_files(album_data.files, album_data.artist, album_data.title)
-    trigger_lidarr_import(album_data, failed_grab)
+    logger.info(f"Attempting Lidarr import of {album.artist} - {album.title}")
+    tag_album_files(album.files, album.artist, album.title)
+    trigger_lidarr_import(album, failed_grab)
 
 
 def monitor_downloads(grab_list: dict[int, GrabbedAlbum], failed_grab):
@@ -1236,10 +1236,10 @@ def monitor_downloads(grab_list: dict[int, GrabbedAlbum], failed_grab):
                 continue
 
             if album_done:
-                album_data = grab_list[album_id]
-                album_data.album_id = album_id
-                logger.info(f"Completed download of Album: {album_data.title} Artist: {album_data.artist}")
-                process_completed_album(album_data, failed_grab)
+                album = grab_list[album_id]
+                album.album_id = album_id
+                logger.info(f"Completed download of Album: {album.title} Artist: {album.artist}")
+                process_completed_album(album, failed_grab)
                 del grab_list[album_id]
                 continue
 
