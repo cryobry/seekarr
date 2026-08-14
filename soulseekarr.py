@@ -14,7 +14,6 @@ from datetime import datetime
 from urllib.parse import urljoin
 import copy
 from dataclasses import dataclass
-from typing import TypedDict
 import music_tag
 import slskd_api
 import yaml
@@ -221,24 +220,26 @@ class AppConfig:
             lock_file_path=os.path.join(args.var_dir, ".soulseekarr.lock"),
         )
 
-class WantedAlbum(TypedDict):
+@dataclass
+class WantedAlbum:
     """A pruned Lidarr wanted-list record, keeping only the fields Soulseekarr reads.
 
     Lidarr's raw wanted-list response nests far more per album (images, ratings, full release
     media/tracks, statistics, etc.); trimming to this shape keeps memory use sane for large
-    libraries. See prune_wanted_record(). `artist` and `releases` are only ever read for their
-    `artistName`/`albumId`, so they're kept as plain dicts rather than their own TypedDicts.
+    libraries. See prune_wanted_record(). `releases` entries are only ever read for their
+    `albumId`, so they're kept as plain dicts rather than their own dataclass.
     """
 
     id: int
     artistId: int
-    artist: dict[str, str]  # {"artistName": str}
+    artistName: str
     title: str
     releaseDate: str
     releases: list[dict[str, int]]  # [{"albumId": int}, ...]
 
 
-class FailedImport(TypedDict):
+@dataclass
+class FailedImport:
     """A denylisted album that failed Lidarr import, plus bookkeeping about the failure."""
 
     album: WantedAlbum
@@ -613,8 +614,8 @@ def filter_list(albums: list[WantedAlbum]):
     if cfg.lidarr.failed_import_denylist:
         filtered_temp = []
         for album in temp_list:
-            if str(album["id"]) in failed_import_denylist:
-                logger.info(f"Skipping failed import album: {album['artist']['artistName']} - {album['title']} (ID: {album['id']})")
+            if str(album.id) in failed_import_denylist:
+                logger.info(f"Skipping failed import album: {album.artistName} - {album.title} (ID: {album.id})")
             else:
                 filtered_temp.append(album)
         temp_list = filtered_temp
@@ -624,16 +625,16 @@ def filter_list(albums: list[WantedAlbum]):
         # Track grabs in memory ourselves so we don't redownload the same album on every loop.
         filtered_temp = []
         for album in temp_list:
-            if album["id"] in grabbed_albums:
-                logger.info(f"Skipping already grabbed album: {album['artist']['artistName']} - {album['title']} (ID: {album['id']})")
+            if album.id in grabbed_albums:
+                logger.info(f"Skipping already grabbed album: {album.artistName} - {album.title} (ID: {album.id})")
             else:
                 filtered_temp.append(album)
         temp_list = filtered_temp
 
     list_to_download = []
     for album in temp_list:
-        if is_blacklisted(album["title"]):
-            logger.info(f"Skipping blacklisted album: {album['artist']['artistName']} - {album['title']} (ID: {album['id']}")
+        if is_blacklisted(album.title):
+            logger.info(f"Skipping blacklisted album: {album.artistName} - {album.title} (ID: {album.id}")
             continue
         else:
             list_to_download.append(album)
@@ -651,13 +652,10 @@ def search_for_album(album: WantedAlbum):
     words), waits for the slskd search to finish or time out, and populates `search_cache` with
     each result's files grouped by user and allowed filetype.
     """
-    album_title = album["title"]
-    artist_name = album["artist"]["artistName"]
-    album_id = album["id"]
-    if len(album_title) == 1:  # Need to add some code to wrangle specific artist names in here.. ;)
-        query = artist_name + " " + album_title
+    if len(album.title) == 1:  # Need to add some code to wrangle specific artist names in here.. ;)
+        query = album.artistName + " " + album.title
     else:
-        query = artist_name + " " + album_title if cfg.slskd.album_prepend_artist else album_title
+        query = album.artistName + " " + album.title if cfg.slskd.album_prepend_artist else album.title
 
     original_query = query
     for word in cfg.slskd.search_blacklist:
@@ -672,10 +670,10 @@ def search_for_album(album: WantedAlbum):
     if query != original_query:
         logger.info(f"Filtered search query: '{original_query}' -> '{query}'")
     if not query:
-        logger.warning(f"Skipping search for {artist_name} - {album_title}: query is empty after filtering")
+        logger.warning(f"Skipping search for {album.artistName} - {album.title}: query is empty after filtering")
         return False
 
-    logger.info(f"Searching for album: {query}")
+    logger.info(f"Searching for album: {album.artistName} - {album.title} (query: '{query}')")
     try:
         search = slskd.searches.search_text(
             searchText=query,
@@ -719,24 +717,24 @@ def search_for_album(album: WantedAlbum):
     if not search_results:
         return False
 
-    if album_id not in search_cache:
-        search_cache[album_id] = {}  # This is so we can check for matches we missed or if a user goes offline during our download
+    if album.id not in search_cache:
+        search_cache[album.id] = {}  # This is so we can check for matches we missed or if a user goes offline during our download
 
     for result in search_results:  # Switching to cached version (one less API call)
         username = result["username"]
-        if username not in search_cache[album_id]:
+        if username not in search_cache[album.id]:
             # If we don't currently have a cache for a user set one up
-            search_cache[album_id][username] = {}
+            search_cache[album.id][username] = {}
 
         logger.info(f"Caching and truncating results for user: {username}")
         for file in result["files"]:
             file_dir = file["filename"].rsplit("\\", 1)[0]
             for allowed_filetype in cfg.slskd.allowed_filetypes:
                 if verify_filetype(file, allowed_filetype):  # Check the filename for an allowed type
-                    if allowed_filetype not in search_cache[album_id][username]:
-                        search_cache[album_id][username][allowed_filetype] = [] # Init the cache for this allowed filetype
-                    if file_dir not in search_cache[album_id][username][allowed_filetype]:
-                        search_cache[album_id][username][allowed_filetype].append(file_dir)
+                    if allowed_filetype not in search_cache[album.id][username]:
+                        search_cache[album.id][username][allowed_filetype] = [] # Init the cache for this allowed filetype
+                    if file_dir not in search_cache[album.id][username][allowed_filetype]:
+                        search_cache[album.id][username][allowed_filetype].append(file_dir)
     return True
 
 
@@ -934,10 +932,10 @@ def find_download(album: WantedAlbum) -> GrabbedAlbum | None:
     For each quality, tries the single-disk match path first, falling back to the multi-disk
     path for multi-media releases. Returns a populated `GrabEntry` on success, or None.
     """
-    album_id = album["id"]
-    artist_name = album["artist"]["artistName"]
-    album_name = album["title"]
-    artist_id = album["artistId"]
+    album_id = album.id
+    artist_name = album.artistName
+    album_name = album.title
+    artist_id = album.artistId
     results = search_cache[album_id]
 
     # Releases/tracks don't change per quality, so fetch them once and reuse across the
@@ -972,7 +970,7 @@ def find_download(album: WantedAlbum) -> GrabbedAlbum | None:
                     filetype=allowed_filetype,
                     title=album_name,
                     artist=artist_name,
-                    year=album["releaseDate"][0:4],
+                    year=album.releaseDate[0:4],
                 )
     return None
 
@@ -992,7 +990,7 @@ def search_and_queue(albums):
         if search_for_album(album):
             entry = find_download(album)
             if entry is not None:
-                grab_list[album["id"]] = entry
+                grab_list[album.id] = entry
             else:
                 failed_grab.append(album)
         else:
@@ -1085,10 +1083,10 @@ def trigger_lidarr_import(album: GrabbedAlbum, failed_grab):
 
         if "Failed" in current_task["message"]:
             folder_path = move_failed_import(current_task["body"]["path"])
-            raw_album = lidarr.get_album(album.album_id)
-            failed_grab.append(raw_album)
+            pruned_album = prune_wanted_record(lidarr.get_album(album.album_id))
+            failed_grab.append(pruned_album)
             if cfg.lidarr.failed_import_denylist:
-                add_to_failed_import_denylist(prune_wanted_record(raw_album), folder_path)
+                add_to_failed_import_denylist(pruned_album, folder_path)
     except Exception:
         logger.exception("Error printing lidarr task message")
         logger.error(current_task)
@@ -1118,7 +1116,7 @@ def process_completed_album(album: GrabbedAlbum, failed_grab):
             os.rmdir(import_folder_fullpath)
         except OSError:
             logger.warning(f"Could not remove temp import directory {import_folder_fullpath}")
-        failed_grab.append(lidarr.get_album(album.album_id))
+        failed_grab.append(prune_wanted_record(lidarr.get_album(album.album_id)))
         return
 
     for rm_dir in rm_dirs:
@@ -1151,7 +1149,7 @@ def monitor_downloads(grab_list: dict[int, GrabbedAlbum], failed_grab):
         cancel_and_delete(grab_list[album_id].files)
         logger.info(f"{reason} Album: {grab_list[album_id].title} Artist: {grab_list[album_id].artist}")
         del grab_list[album_id]
-        failed_grab.append(lidarr.get_album(album_id))
+        failed_grab.append(prune_wanted_record(lidarr.get_album(album_id)))
 
     def requeue_file(album_id, file):
         """Requeue a single errored file. Returns True on success, False if enqueue failed."""
@@ -1280,7 +1278,7 @@ def grab_most_wanted(albums):
         logger.info(f"Album: {grab_list[album_id].title} Artist: {grab_list[album_id].artist}")
     logger.info(f"Failed to grab: {len(failed_grab)}")
     for album in failed_grab:
-        logger.info(f"Album: {album['title']} Artist: {album['artist']['artistName']}")
+        logger.info(f"Album: {album.title} Artist: {album.artistName}")
 
     logger.info("-------------------")
     logger.info(f"Waiting for downloads... monitor at: {''.join([cfg.slskd.host_url, cfg.slskd.url_base, 'downloads'])}")
@@ -1289,13 +1287,9 @@ def grab_most_wanted(albums):
 
     count = len(failed_search) + len(failed_grab)
     for album in failed_search:
-        album_title = album["title"]
-        artist_name = album["artist"]["artistName"]
-        logger.info(f"Search failed for Album: {album_title} - Artist: {artist_name}")
+        logger.info(f"Search failed for Album: {album.title} - Artist: {album.artistName}")
     for album in failed_grab:
-        album_title = album["title"]
-        artist_name = album["artist"]["artistName"]
-        logger.info(f"Download failed for Album: {album_title} - Artist: {artist_name}")
+        logger.info(f"Download failed for Album: {album.title} - Artist: {album.artistName}")
 
     return count
 
@@ -1466,14 +1460,14 @@ def setup_logging(config: dict, var_dir: str) -> None:
 
 def prune_wanted_record(raw: dict) -> WantedAlbum:
     """Trim a raw Lidarr wanted-list record down to the fields Soulseekarr actually reads."""
-    return {
-        "id": raw["id"],
-        "artistId": raw["artistId"],
-        "artist": {"artistName": raw["artist"]["artistName"]},
-        "title": raw["title"],
-        "releaseDate": raw["releaseDate"],
-        "releases": [{"albumId": release["albumId"]} for release in raw.get("releases", [])],
-    }
+    return WantedAlbum(
+        id=raw["id"],
+        artistId=raw["artistId"],
+        artistName=raw["artist"]["artistName"],
+        title=raw["title"],
+        releaseDate=raw["releaseDate"],
+        releases=[{"albumId": release["albumId"]} for release in raw.get("releases", [])],
+    )
 
 
 # Page size used only for the internal Lidarr API calls that bulk-fetch the wanted list;
@@ -1587,9 +1581,9 @@ def filter_queued_records(records: list[WantedAlbum]) -> list[WantedAlbum]:
 
         not_queued = []
         for record in records:
-            for release in record["releases"]:
+            for release in record.releases:
                 if release["albumId"] in queued_album_ids:
-                    logger.info(f"Skipping record '{record['title']}' because it's already in download queue")
+                    logger.info(f"Skipping record '{record.title}' because it's already in download queue")
                     break
             else:  # This only runs if the loop is broken out of. Saves on all the boolean found= stuff
                 not_queued.append(record)
@@ -1602,14 +1596,14 @@ def filter_queued_records(records: list[WantedAlbum]) -> list[WantedAlbum]:
 
 
 def add_to_failed_import_denylist(album: WantedAlbum, folder_path: str | None = None) -> None:
-    album_key = str(album["id"])
+    album_key = str(album.id)
     if album_key not in failed_import_denylist:
-        failed_import_denylist[album_key] = {
-            "album": album,
-            "failed_at": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
-            "folder_path": folder_path,
-        }
-        logger.info(f"Added to failed import denylist: {album['artist']['artistName']} - {album['title']} (ID: {album['id']})")
+        failed_import_denylist[album_key] = FailedImport(
+            album=album,
+            failed_at=datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
+            folder_path=folder_path,
+        )
+        logger.info(f"Added to failed import denylist: {album.artistName} - {album.title} (ID: {album.id})")
 
 
 def run_once(args) -> int:
