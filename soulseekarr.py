@@ -139,6 +139,7 @@ class AppConfig:
     lidarr: LidarrConfig
     slskd: SlskdConfig
     lock_file_path: str
+    interval: int
 
     @classmethod
     def from_yaml(cls, data: dict, args, source: str | None = None) -> "AppConfig":
@@ -218,6 +219,11 @@ class AppConfig:
             lidarr=lidarr,
             slskd=slskd,
             lock_file_path=os.path.join(args.var_dir, ".soulseekarr.lock"),
+            interval=int(
+                args.interval
+                if args.interval is not None
+                else env_override("app", "interval", data.get("interval", 300 if is_docker() else 0))
+            ),
         )
 
 @dataclass
@@ -284,11 +290,9 @@ grabbed_albums: set = set()
 # Albums that failed Lidarr import, keyed by str(album id). In-memory only (not persisted to
 # disk), so it resets on process restart same as grabbed_albums.
 failed_import_denylist: dict[str, FailedImport] = {}
-# Not-yet-processed chunks per source, built from one Lidarr fetch and handed out one chunk
-# per get_records() call. Refilled with a fresh Lidarr fetch once a source's list empties, so
-# a full pass over the wanted list always ends with the next chunk coming from up-to-date
-# data. In memory only, so a fresh process always starts with an empty queue.
-pending_chunks: dict[str, list[list[WantedAlbum]]] = {}
+# Albums still to process from the most recent Lidarr fetch, keyed by source. Each run takes
+# one batch from this list; when it is empty, get_wanted_albums() fetches a fresh wanted list.
+remaining_albums_by_source: dict[str, list[WantedAlbum]] = {}
 
 
 def album_match(lidarr_tracks, slskd_tracks, username, filetype, album_name):
@@ -1459,85 +1463,54 @@ def prune_wanted_record(raw: dict) -> WantedAlbum:
     )
 
 
-# Page size used only for the internal Lidarr API calls that bulk-fetch the wanted list;
-# unrelated to lidarr.chunk_size, which controls how many records get processed per run.
-WANTED_API_PAGE_SIZE = 250
+def get_wanted_albums(source: str) -> list[WantedAlbum]:
+    """Return the next batch of wanted albums for `source`.
 
-
-def fetch_wanted_records(source: str) -> list[WantedAlbum]:
-    """Fetch every one of Lidarr's wanted records for `source` ("missing" or "cutoff_unmet"),
-    pruned down to a `WantedAlbum` each, with anything already in Lidarr's download queue
-    filtered out.
-
-    There's no way to ask Lidarr for a subset of the wanted list for processing purposes, so
-    we always fetch every record (WANTED_API_PAGE_SIZE only controls the HTTP batch size).
-    Each raw record is pruned right after fetching (see prune_wanted_record()), since Lidarr's
-    full per-album payload is much larger than what we need and this list can run into the
-    thousands for large libraries.
-    `search_type: random` ignores lidarr.sort_key/sort_dir and always requests "id" ascending
-    instead, since get_records() shuffles the result anyway and "id" (the primary key) is
-    cheaper for Lidarr to sort by than the other keys - no join (unlike artists.sortName) or
-    extra sort step (unlike albums.releaseDate/albums.title), which matters once the wanted
-    list gets large.
+    Reuses albums left over from the last fetch. When none remain, fetches Lidarr's complete
+    wanted list, removes albums already in Lidarr's download queue, and saves the unreturned
+    albums for later runs.
     """
-    missing = source == "missing"
-    randomize = cfg.lidarr.search_type == "random"
+    remaining_albums = remaining_albums_by_source.get(source, [])
 
-    def fetch_page(page: int) -> dict:
-        kwargs = {"page": page, "page_size": WANTED_API_PAGE_SIZE, "missing": missing}
-        kwargs["sort_key"] = "id" if randomize else cfg.lidarr.sort_key
-        kwargs["sort_dir"] = "ascending" if randomize else cfg.lidarr.sort_dir
-        return lidarr.get_wanted(**kwargs)
-
-    try:
-        wanted = fetch_page(1)
-    except PyarrError as ex:
-        logger.error(f"An error occurred when attempting to get records: {ex}")
-        return []
-
-    total_wanted = wanted["totalRecords"]
-    all_records = list(wanted["records"])
-    page = 2
-    while len(all_records) < total_wanted:
-        try:
-            wanted = fetch_page(page)
-        except PyarrError as ex:
-            logger.error(f"Failed to grab record: {ex}")
-            break
-        all_records.extend(wanted["records"])
-        page += 1
-
-    pruned_records = [prune_wanted_record(raw) for raw in all_records]
-    return filter_queued_records(pruned_records)
-
-
-def get_records(source: str) -> list[WantedAlbum]:
-    """Return the next chunk_size-sized batch of `source`'s wanted records, fetching a fresh
-    batch from Lidarr (see fetch_wanted_records()) and splitting it into chunks whenever the
-    previous batch has been fully handed out (see `pending_chunks`).
-
-    Chunks are built once per fetch and handed out one at a time across run_once() calls
-    instead of re-fetching Lidarr's whole wanted list on every call. Once every chunk from a
-    fetch has had a turn, the next call fetches again, so a full pass always ends with fresh
-    data from Lidarr rather than reusing a stale snapshot indefinitely.
-    `search_type: random` shuffles each freshly fetched batch once before chunking it;
-    `incrementing` keeps Lidarr's requested sort order.
-    """
-    if not pending_chunks.get(source):
-        records = fetch_wanted_records(source)
-        if not records:
-            return []
-
-        if cfg.lidarr.search_type == "random":
-            random.shuffle(records)
-        elif cfg.lidarr.search_type != "incrementing":
+    if not remaining_albums:
+        if cfg.lidarr.search_type not in ("incrementing", "random"):
             remove_lock_file(cfg.lock_file_path)
             raise ValueError(f"[lidarr.search_type] - {cfg.lidarr.search_type = } is not valid")
 
-        chunk_size = max(1, cfg.lidarr.chunk_size)
-        pending_chunks[source] = [records[i : i + chunk_size] for i in range(0, len(records), chunk_size)]
+        wanted_kwargs = {
+            "missing": source == "missing",
+            # Page size used for the internal Lidarr API calls that bulk-fetch the wanted list.
+            # Unrelated to lidarr.chunk_size, which controls how many records get processed per run.
+            "page_size": 250, 
+            "sort_key": "id" if cfg.lidarr.search_type == "random" else cfg.lidarr.sort_key,
+            "sort_dir": "ascending" if cfg.lidarr.search_type == "random" else cfg.lidarr.sort_dir,
+        }
+        try:
+            wanted_page = lidarr.get_wanted(page=1, **wanted_kwargs)
+        except PyarrError as ex:
+            logger.error(f"An error occurred when attempting to get records: {ex}")
+            return []
 
-    return pending_chunks[source].pop(0)
+        raw_albums = list(wanted_page["records"])
+        total_albums = wanted_page["totalRecords"]
+        page = 2
+        while len(raw_albums) < total_albums:
+            try:
+                wanted_page = lidarr.get_wanted(page=page, **wanted_kwargs)
+            except PyarrError as ex:
+                logger.error(f"Failed to grab record: {ex}")
+                break
+            raw_albums.extend(wanted_page["records"])
+            page += 1
+
+        remaining_albums = filter_queued_records([prune_wanted_record(raw) for raw in raw_albums])
+        if cfg.lidarr.search_type == "random":
+            random.shuffle(remaining_albums)
+
+    batch_size = max(1, cfg.lidarr.chunk_size)
+    albums_to_process = remaining_albums[:batch_size]
+    remaining_albums_by_source[source] = remaining_albums[batch_size:]
+    return albums_to_process
 
 
 def filter_queued_records(records: list[WantedAlbum]) -> list[WantedAlbum]:
@@ -1595,118 +1568,57 @@ def add_to_failed_import_denylist(album: WantedAlbum, folder_path: str | None = 
         logger.info(f"Added to failed import denylist: {album.artistName} - {album.title} (ID: {album.id})")
 
 
-def run_once(args) -> int:
+def run_once(args, raw_config: dict) -> int:
     """Runs a single Soulseekarr cycle: fetch wanted albums, search, download, and import. Returns a process exit code."""
-    global cfg, lidarr, slskd
+    global cfg
 
-    lock_file_path = os.path.join(args.var_dir, ".soulseekarr.lock")
-    config_file_path = os.path.join(args.config_dir, "config.yml")
+    any_wanted_albums = False
+    total_failed = 0
+    sources_to_process = cfg.lidarr.sources
 
-    if not is_docker() and os.path.exists(lock_file_path) and args.lock_file:
-        logger.info(f"Soulseekarr instance is already running.")
-        return 1
-
-    try:
-        if not is_docker() and args.lock_file:
-            with open(lock_file_path, "w") as lock_file:
-                lock_file.write("locked")
-
-        if not os.path.exists(config_file_path):
-            if migrate_soularr_ini_config(args.config_dir):
-                return 0
-
-        if os.path.exists(config_file_path):
-            with open(config_file_path, "r") as config_file:
-                raw_config = yaml.safe_load(config_file) or {}
-            raw_config = expand_env_vars(raw_config)
-            setup_logging(raw_config, args.var_dir)
-        else:
-            if is_docker():
-                logger.error(
-                    'Config file does not exist! Please mount "/data" and place your "config.yml" file there. Alternatively, pass `--config-dir /directory/of/your/liking` as post arguments to store the config somewhere else.'
-                )
-                logger.error("See: https://github.com/cryobry/soulseekarr/blob/main/config.yml for an example config file.")
-            else:
-                logger.error(
-                    "Config file does not exist! Please place it in the working directory. Alternatively, pass `--config-dir /directory/of/your/liking` as post arguments to store the config somewhere else."
-                )
-                logger.error("See: https://github.com/cryobry/soulseekarr/blob/main/config.yml for an example config file.")
+    for source in sources_to_process:
+        # Re-resolve cfg for this source so its accepted_formats/allowed_filetypes
+        # overrides (and any future per-source settings) apply for this loop only.
+        cfg = AppConfig.from_yaml(raw_config, args, source=source)
+        logger.debug(f"Getting wanted albums from {source}")
+        try:
+            wanted_albums: list[WantedAlbum] = get_wanted_albums(source)
+        except ValueError as ex:
+            logger.error(f"An error occurred: {ex}")
             return 0
 
-        # Load the configuration into a structured object for easier access
-        cfg = AppConfig.from_yaml(raw_config, args)
+        if not wanted_albums:
+            continue
+        any_wanted_albums = True
 
-        # Init API clients
-        slskd = slskd_api.SlskdClient(host=cfg.slskd.host_url, api_key=cfg.slskd.api_key, url_base=cfg.slskd.url_base)
-        # pyarr has no separate url_base param, so fold it into host_url ourselves (mirrors slskd_api's host+url_base join)
-        lidarr = LidarrAPI(urljoin(f"{cfg.lidarr.host_url.rstrip('/')}/", cfg.lidarr.url_base.strip("/")), cfg.lidarr.api_key)
+        logger.info(f"Fetched {len(wanted_albums)} releases from '{source}' list that aren't on the deny list and/or blacklisted.")
 
-        any_records = False
-        total_failed = 0
-        sources_to_process = cfg.lidarr.sources
-
-        for source in sources_to_process:
-            # Re-resolve cfg for this source so its accepted_formats/allowed_filetypes
-            # overrides (and any future per-source settings) apply for this loop only.
-            cfg = AppConfig.from_yaml(raw_config, args, source=source)
-            logger.debug(f"Getting records from {source}")
-            try:
-                records: list[WantedAlbum] = get_records(source)
-            except ValueError as ex:
-                logger.error(f"An error occurred: {ex}")
-                return 0
-
-            if not records:
-                continue
-            any_records = True
-
-            try:
-                filtered = filter_list(records)
-                if filtered is not None:
-                    total_failed += grab_most_wanted(filtered)
-                else:
-                    logger.info(f"No releases wanted for source '{source}' that aren't on the deny list and/or blacklisted")
-            except Exception:
-                logger.exception("Fatal error!")
-                return 0
-
-        if any_records:
-            if total_failed == 0:
-                logger.info("Soulseekarr finished.")
-            else:
-                logger.info(f"{total_failed}: releases failed to find a match in the search results and are still wanted.")
-            if cfg.slskd.remove_completed_downloads:
-                slskd.transfers.remove_completed_downloads()
-        else:
-            logger.info("No releases wanted.")
-
-        return 0
-
-    finally:
-        # Remove the lock file after activity is done
-        remove_lock_file(lock_file_path)
-
-
-def get_interval(args) -> int:
-    """Resolve the run interval in seconds from --interval, SCRIPT_INTERVAL, or a default.
-
-    CLI `--interval` takes priority, then the `SCRIPT_INTERVAL` env var. Docker defaults to
-    300s if neither is set (matching the old run.sh default); non-Docker defaults to running
-    once, preserving manual/cron usage.
-    """
-    if args.interval is not None:
-        return args.interval
-    env_value = os.environ.get("SCRIPT_INTERVAL")
-    if env_value is not None:
         try:
-            return int(env_value)
-        except ValueError:
-            logger.warning(f"Invalid SCRIPT_INTERVAL value: {env_value!r}. Ignoring.")
-    return 300 if is_docker() else 0
+            filtered_wanted_albums = filter_list(wanted_albums)
+            if filtered_wanted_albums is not None:
+                total_failed += grab_most_wanted(filtered_wanted_albums)
+            else:
+                logger.info(f"No releases fetched from '{source}' list that aren't on the deny list and/or blacklisted.")
+        except Exception:
+            logger.exception("Fatal error!")
+            return 0
+
+    if any_wanted_albums:
+        if total_failed == 0:
+            logger.info("Soulseekarr finished.")
+        else:
+            logger.info(f"{total_failed}: releases failed to find a match in the search results and are still wanted.")
+        if cfg.slskd.remove_completed_downloads:
+            slskd.transfers.remove_completed_downloads()
+    else:
+        logger.info("No releases wanted.")
+
+    return 0
 
 
 def main():
-    """Parse CLI arguments and run Soulseekarr once or on a loop, per --interval/SCRIPT_INTERVAL."""
+    """Parse CLI arguments, resolve configuration, then run Soulseekarr once or on a loop."""
+    global cfg, lidarr, slskd
     # Allow some overrides to be passed to the script
     parser = argparse.ArgumentParser(description="""Soulseekarr reads all of your "wanted" albums/artists from Lidarr and downloads them using Slskd""")
 
@@ -1747,20 +1659,50 @@ def main():
         "--interval",
         type=int,
         default=None,
-        help="Seconds to wait between runs, looping forever. Falls back to the SCRIPT_INTERVAL env var. Runs once and exits if neither is set (default behavior).",
+        help="Seconds to wait between runs, overriding APP_INTERVAL and config.yml. Use 0 to run once.",
     )
 
     args = parser.parse_args()
 
-    interval = get_interval(args)
+    lock_file_path = os.path.join(args.var_dir, ".soulseekarr.lock")
+    config_file_path = os.path.join(args.config_dir, "config.yml")
 
-    if interval > 0:
-        while True:
-            run_once(args)
-            logger.info(f"Waiting {interval} seconds before checking again...")
-            time.sleep(interval)
-    else:
-        sys.exit(run_once(args))
+    if not is_docker() and os.path.exists(lock_file_path) and args.lock_file:
+        logger.info("Soulseekarr instance is already running.")
+        return
+
+    try:
+        if not is_docker() and args.lock_file:
+            with open(lock_file_path, "w") as lock_file:
+                lock_file.write("locked")
+
+        if not os.path.exists(config_file_path) and migrate_soularr_ini_config(args.config_dir):
+            return
+
+        if not os.path.exists(config_file_path):
+            if is_docker():
+                logger.error('Config file does not exist! Please mount "/data" and place your "config.yml" file there.')
+            else:
+                logger.error("Config file does not exist! Please place it in the working directory.")
+            return
+
+        with open(config_file_path, "r") as config_file:
+            raw_config = expand_env_vars(yaml.safe_load(config_file) or {})
+        setup_logging(raw_config, args.var_dir)
+
+        cfg = AppConfig.from_yaml(raw_config, args)
+        slskd = slskd_api.SlskdClient(host=cfg.slskd.host_url, api_key=cfg.slskd.api_key, url_base=cfg.slskd.url_base)
+        lidarr = LidarrAPI(urljoin(f"{cfg.lidarr.host_url.rstrip('/')}/", cfg.lidarr.url_base.strip("/")), cfg.lidarr.api_key)
+
+        if cfg.interval > 0:
+            while True:
+                run_once(args, raw_config)
+                logger.info(f"Waiting {cfg.interval} seconds before checking again...")
+                time.sleep(cfg.interval)
+        else:
+            sys.exit(run_once(args, raw_config))
+    finally:
+        remove_lock_file(lock_file_path)
 
 
 if __name__ == "__main__":
