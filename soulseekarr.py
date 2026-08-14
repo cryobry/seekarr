@@ -273,6 +273,8 @@ logger = logging.getLogger("soulseekarr")
 cfg: AppConfig = None  # type: ignore[assignment]
 
 # ===== Runtime State & Caches =====
+# search_cache/folder_cache/broken_user persist across --interval/SCRIPT_INTERVAL loop iterations
+# within the same process (not reset in run_once()); a fresh process still starts with these empty.
 search_cache: dict = {}
 folder_cache: dict = {}
 broken_user: list = []
@@ -1595,7 +1597,7 @@ def add_to_failed_import_denylist(album: WantedAlbum, folder_path: str | None = 
 
 def run_once(args) -> int:
     """Runs a single Soulseekarr cycle: fetch wanted albums, search, download, and import. Returns a process exit code."""
-    global cfg, lidarr, slskd, search_cache, folder_cache, broken_user
+    global cfg, lidarr, slskd
 
     lock_file_path = os.path.join(args.var_dir, ".soulseekarr.lock")
     config_file_path = os.path.join(args.config_dir, "config.yml")
@@ -1639,11 +1641,6 @@ def run_once(args) -> int:
         # pyarr has no separate url_base param, so fold it into host_url ourselves (mirrors slskd_api's host+url_base join)
         lidarr = LidarrAPI(urljoin(f"{cfg.lidarr.host_url.rstrip('/')}/", cfg.lidarr.url_base.strip("/")), cfg.lidarr.api_key)
 
-        # Init cache. The wide search returns all the data we need. This prevents us from hammering the users on the Soulseek network
-        search_cache = {}
-        folder_cache = {}
-        broken_user = []
-
         any_records = False
         total_failed = 0
         sources_to_process = cfg.lidarr.sources
@@ -1654,7 +1651,7 @@ def run_once(args) -> int:
             cfg = AppConfig.from_yaml(raw_config, args, source=source)
             logger.debug(f"Getting records from {source}")
             try:
-                records = get_records(source)
+                records: list[WantedAlbum] = get_records(source)
             except ValueError as ex:
                 logger.error(f"An error occurred: {ex}")
                 return 0
