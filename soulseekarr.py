@@ -136,6 +136,7 @@ class SlskdConfig:
 
 @dataclass
 class AppConfig:
+    source: str | None
     lidarr: LidarrConfig
     slskd: SlskdConfig
     lock_file_path: str
@@ -152,7 +153,6 @@ class AppConfig:
         slskd_cfg: dict = data.get("slskd") or {}
 
         # Layer this source's overrides (top-level `missing`/`cutoff_unmet` blocks) over the top-level lidarr/slskd defaults.
-        # Called once per source in the run_once loop so the global cfg reflects the source currently being processed.
         source_cfg: dict = (data.get(source) or {}) if source else {}
         resolved_lidarr = {**lidarr_cfg, **(source_cfg.get("lidarr") or {})}
         resolved_slskd = {**slskd_cfg, **(source_cfg.get("slskd") or {})}
@@ -216,6 +216,7 @@ class AppConfig:
         )
 
         return cls(
+            source=source,
             lidarr=lidarr,
             slskd=slskd,
             lock_file_path=os.path.join(args.var_dir, ".soulseekarr.lock"),
@@ -587,7 +588,7 @@ def check_for_match(tracks, allowed_filetype, file_dirs, username, album_name):
                 return False, {}, ""
             folder_cache[username][file_dir] = copy.deepcopy(directory)
         else:
-            logger.info(f"User: {username} Folder: {file_dir} in cache. Using cached value")
+            logger.debug(f"User: {username} Folder: {file_dir} in cache. Using cached value")
             directory = copy.deepcopy(folder_cache[username][file_dir])
 
         track_num = len(tracks)
@@ -1463,14 +1464,17 @@ def prune_wanted_record(raw: dict) -> WantedAlbum:
     )
 
 
-def get_wanted_albums(source: str) -> list[WantedAlbum]:
-    """Return the next batch of wanted albums for `source`.
+def get_wanted_albums() -> list[WantedAlbum]:
+    """Return the next batch of wanted albums for the active source configuration.
 
     Reuses albums left over from the last fetch. When none remain, fetches Lidarr's complete
     wanted list, removes albums already in Lidarr's download queue, and saves the unreturned
     albums for later runs.
     """
-    remaining_albums = remaining_albums_by_source.get(source, [])
+    if cfg.source is None:
+        raise ValueError("Cannot fetch wanted albums without a source")
+
+    remaining_albums = remaining_albums_by_source.get(cfg.source, [])
 
     if not remaining_albums:
         if cfg.lidarr.search_type not in ("incrementing", "random"):
@@ -1478,7 +1482,7 @@ def get_wanted_albums(source: str) -> list[WantedAlbum]:
             raise ValueError(f"[lidarr.search_type] - {cfg.lidarr.search_type = } is not valid")
 
         wanted_kwargs = {
-            "missing": source == "missing",
+            "missing": cfg.source == "missing",
             # Page size used for the internal Lidarr API calls that bulk-fetch the wanted list.
             # Unrelated to lidarr.chunk_size, which controls how many records get processed per run.
             "page_size": 250, 
@@ -1509,7 +1513,7 @@ def get_wanted_albums(source: str) -> list[WantedAlbum]:
 
     batch_size = max(1, cfg.lidarr.chunk_size)
     albums_to_process = remaining_albums[:batch_size]
-    remaining_albums_by_source[source] = remaining_albums[batch_size:]
+    remaining_albums_by_source[cfg.source] = remaining_albums[batch_size:]
     return albums_to_process
 
 
@@ -1568,57 +1572,46 @@ def add_to_failed_import_denylist(album: WantedAlbum, folder_path: str | None = 
         logger.info(f"Added to failed import denylist: {album.artistName} - {album.title} (ID: {album.id})")
 
 
-def run_once(args, raw_config: dict) -> int:
+def run_once(source_cfg: AppConfig) -> int:
     """Runs a single Soulseekarr cycle: fetch wanted albums, search, download, and import. Returns a process exit code."""
     global cfg
+    cfg = source_cfg
 
-    any_wanted_albums = False
-    total_failed = 0
-    sources_to_process = cfg.lidarr.sources
+    logger.info(f"Getting wanted albums from {cfg.source}")
+    try:
+        wanted_albums: list[WantedAlbum] = get_wanted_albums()
+    except ValueError as ex:
+        logger.error(f"An error occurred: {ex}")
+        return 0
 
-    for source in sources_to_process:
-        # Re-resolve cfg for this source so its accepted_formats/allowed_filetypes
-        # overrides (and any future per-source settings) apply for this loop only.
-        cfg = AppConfig.from_yaml(raw_config, args, source=source)
-        logger.debug(f"Getting wanted albums from {source}")
-        try:
-            wanted_albums: list[WantedAlbum] = get_wanted_albums(source)
-        except ValueError as ex:
-            logger.error(f"An error occurred: {ex}")
-            return 0
+    if not wanted_albums:
+        logger.info("No releases wanted.")
+        return 0
 
-        if not wanted_albums:
-            continue
-        any_wanted_albums = True
+    logger.info(f"Fetched {len(wanted_albums)} releases from '{cfg.source}' list that aren't on the deny list and/or blacklisted.")
 
-        logger.info(f"Fetched {len(wanted_albums)} releases from '{source}' list that aren't on the deny list and/or blacklisted.")
-
-        try:
-            filtered_wanted_albums = filter_list(wanted_albums)
-            if filtered_wanted_albums is not None:
-                total_failed += grab_most_wanted(filtered_wanted_albums)
+    try:
+        filtered_wanted_albums = filter_list(wanted_albums)
+        if filtered_wanted_albums is not None:
+            total_failed = grab_most_wanted(filtered_wanted_albums)
+            if total_failed == 0:
+                logger.info("Soulseekarr finished.")
             else:
-                logger.info(f"No releases fetched from '{source}' list that aren't on the deny list and/or blacklisted.")
-        except Exception:
-            logger.exception("Fatal error!")
-            return 0
-
-    if any_wanted_albums:
-        if total_failed == 0:
-            logger.info("Soulseekarr finished.")
+                logger.info(f"{total_failed}: releases failed to find a match in the search results and are still wanted.")
         else:
-            logger.info(f"{total_failed}: releases failed to find a match in the search results and are still wanted.")
+            logger.info(f"No releases fetched from '{cfg.source}' list that aren't on the deny list and/or blacklisted.")
         if cfg.slskd.remove_completed_downloads:
             slskd.transfers.remove_completed_downloads()
-    else:
-        logger.info("No releases wanted.")
+    except Exception:
+        logger.exception("Fatal error!")
+        return 0
 
     return 0
 
 
 def main():
     """Parse CLI arguments, resolve configuration, then run Soulseekarr once or on a loop."""
-    global cfg, lidarr, slskd
+    global lidarr, slskd
     # Allow some overrides to be passed to the script
     parser = argparse.ArgumentParser(description="""Soulseekarr reads all of your "wanted" albums/artists from Lidarr and downloads them using Slskd""")
 
@@ -1691,16 +1684,25 @@ def main():
         setup_logging(raw_config, args.var_dir)
 
         cfg = AppConfig.from_yaml(raw_config, args)
+
+        # Initialize the API clients with the resolved configuration
         slskd = slskd_api.SlskdClient(host=cfg.slskd.host_url, api_key=cfg.slskd.api_key, url_base=cfg.slskd.url_base)
         lidarr = LidarrAPI(urljoin(f"{cfg.lidarr.host_url.rstrip('/')}/", cfg.lidarr.url_base.strip("/")), cfg.lidarr.api_key)
 
+        source_configs = [
+            AppConfig.from_yaml(raw_config, args, source=source)
+            for source in cfg.lidarr.sources
+        ]
+
         if cfg.interval > 0:
             while True:
-                run_once(args, raw_config)
+                for source_cfg in source_configs:
+                    run_once(source_cfg)
                 logger.info(f"Waiting {cfg.interval} seconds before checking again...")
                 time.sleep(cfg.interval)
         else:
-            sys.exit(run_once(args, raw_config))
+            for source_cfg in source_configs:
+                run_once(source_cfg)
     finally:
         remove_lock_file(lock_file_path)
 
