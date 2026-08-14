@@ -261,7 +261,6 @@ class GrabbedAlbum:
     artist: str
     year: str
     album_id: int | None = None
-    error_count: int = 0
     count_start: float | None = None
     rejected_retries: int = 0
     import_folder: str | None = None
@@ -1145,13 +1144,19 @@ def monitor_downloads(grab_list: dict[int, GrabbedAlbum], failed_grab):
     """
     MAX_FILE_RETRIES = 4  # Max requeue attempts per file for hard errors (Errored, Cancelled, etc.)
 
-    def delete_album(reason):
-        cancel_and_delete(grab_list[album_id].files)
-        logger.info(f"{reason} Album: {grab_list[album_id].title} Artist: {grab_list[album_id].artist}")
-        del grab_list[album_id]
+    def delete_album(album_id, reason):
+        album = grab_list.pop(album_id)
+        cancel_and_delete(album.files)
+        logger.info(f"{reason} Album: {album.title} Artist: {album.artist}")
         failed_grab.append(prune_wanted_record(lidarr.get_album(album_id)))
 
-    def requeue_file(album_id, file):
+    def fail_album(album_id, condition, reason="Failed grab of"):
+        """Delete the album if `condition` is true. Returns `condition` for one-line early-outs."""
+        if condition:
+            delete_album(album_id, reason)
+        return condition
+
+    def requeue_file(album, file):
         """Requeue a single errored file. Returns True on success, False if enqueue failed."""
         data_dict = [{"filename": file["filename"], "size": file["size"]}]
         logger.info(f"Download error. Requeue file: {file['filename']}")
@@ -1159,82 +1164,64 @@ def monitor_downloads(grab_list: dict[int, GrabbedAlbum], failed_grab):
         if requeue is not None:
             file["id"] = requeue[0]["id"]
             time.sleep(1)
-            slskd_download_status(grab_list[album_id].files)
+            slskd_download_status(album.files)
             return True
         return False
 
-    def handle_hard_error(album_id, file, problems):
+    def handle_hard_error(album_id, album, file, problems):
         """Handle Cancelled/TimedOut/Errored/Aborted files.
 
         Returns True if the album was deleted (caller should stop processing this album).
         """
-        if len(problems) == len(grab_list[album_id].files):
-            delete_album("Failed grab of")
-            return True
-        if not cfg.slskd.requeue_failed_downloads:
-            delete_album("Failed grab of")
+        if fail_album(album_id, len(problems) == len(album.files) or not cfg.slskd.requeue_failed_downloads):
             return True
         file.setdefault("retry", 0)
         file["retry"] += 1
-        if file["retry"] > MAX_FILE_RETRIES:
-            delete_album("Failed grab of")
+        if fail_album(album_id, file["retry"] > MAX_FILE_RETRIES):
             return True
-        if not requeue_file(album_id, file):
-            delete_album("Failed grab of")
-            return True
-        return False
+        return fail_album(album_id, not requeue_file(album, file))
 
-    def handle_rejected(album_id, file, problems):
+    def handle_rejected(album_id, album, file, problems):
         """Handle Rejected files.
 
         Returns True if the album was deleted or a requeue was attempted (caller should stop
         processing this album this iteration). Rejected files often indicate grab limits; we
         wait for all other files to reach a stable state before requeuing.
         """
-        files = grab_list[album_id].files
-        if len(problems) == len(files):
-            delete_album("Failed grab of")
-            return True
-        if not cfg.slskd.requeue_failed_downloads:
-            delete_album("Failed grab of")
+        files = album.files
+        if fail_album(album_id, len(problems) == len(files) or not cfg.slskd.requeue_failed_downloads):
             return True
         # Only requeue once all non-problem files have settled (no files mid-transfer).
         stable_states = ("Completed, Succeeded", "Queued, Remotely", "Queued, Locally")
         accounted = sum(1 for f in files if f["status"]["state"] in stable_states) + len(problems)
         if accounted < len(files):
             return False
-        if grab_list[album_id].rejected_retries >= int(len(files) * 1.2):
-            delete_album("Failed grab of")
+        if fail_album(album_id, album.rejected_retries >= int(len(files) * 1.2)):
             return True
-        if not requeue_file(album_id, file):
-            delete_album("Failed grab of")
+        if fail_album(album_id, not requeue_file(album, file)):
             return True
-        grab_list[album_id].rejected_retries += 1
+        album.rejected_retries += 1
         return True  # Requeued one file; wait for next monitoring iteration
 
     while True:
         for album_id in list(grab_list.keys()):
-            if not slskd_download_status(grab_list[album_id].files):
-                grab_list[album_id].error_count += 1
+            album = grab_list[album_id]
+
+            if not slskd_download_status(album.files):
                 continue
 
-            album_done, problems, queued = downloads_all_done(grab_list[album_id].files)
+            album_done, problems, queued = downloads_all_done(album.files)
 
-            count_start = grab_list[album_id].count_start
-            if count_start is None:
-                count_start = time.time()
-                grab_list[album_id].count_start = count_start
-            elapsed = time.time() - count_start
+            if album.count_start is None:
+                album.count_start = time.time()
+            elapsed = time.time() - album.count_start
 
-            if elapsed >= cfg.slskd.stalled_timeout:
-                delete_album("Timeout waiting for download of")
+            if fail_album(album_id, elapsed >= cfg.slskd.stalled_timeout, "Timeout waiting for download of"):
                 continue
-            if queued == len(grab_list[album_id].files) and elapsed >= cfg.slskd.remote_queue_timeout:
-                delete_album("Timeout waiting for download of")
+            if fail_album(album_id, queued == len(album.files) and elapsed >= cfg.slskd.remote_queue_timeout, "Timeout waiting for download of"):
                 continue
 
             if album_done:
-                album = grab_list[album_id]
                 album.album_id = album_id
                 logger.info(f"Completed download of Album: {album.title} Artist: {album.artist}")
                 process_completed_album(album, failed_grab)
@@ -1249,10 +1236,10 @@ def monitor_downloads(grab_list: dict[int, GrabbedAlbum], failed_grab):
                     logger.debug(f"Checking {file['filename']}")
                     state = file["status"]["state"]
                     if state in ("Completed, Cancelled", "Completed, TimedOut", "Completed, Errored", "Completed, Aborted"):
-                        if handle_hard_error(album_id, file, problems):
+                        if handle_hard_error(album_id, album, file, problems):
                             break
                     elif state == "Completed, Rejected":
-                        if handle_rejected(album_id, file, problems):
+                        if handle_rejected(album_id, album, file, problems):
                             break
                     else:
                         logger.error(f"Unexpected file state in problem list: {state}")
