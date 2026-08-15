@@ -1163,7 +1163,7 @@ class GrabbedAlbum:
         """Cancel each in-progress slskd download for this album and remove its local download folder."""
         _cancel_and_delete_files(self.cfg, self.files)
 
-    def move_failed_import(self, src_path) -> str:
+    def move_failed_import(self, src_path) -> str | None:
         """Move a failed Lidarr import's folder into `cfg.slskd.failed_imports_dir`, avoiding name clashes."""
         failed_imports_dir = self.cfg.slskd.failed_imports_dir
 
@@ -1174,7 +1174,7 @@ class GrabbedAlbum:
         folder_path = safe_path(self.cfg.slskd.download_dir, folder_name)
         if folder_path is None:
             logger.error("Refusing to move a failed import from an invalid slskd download path")
-            return os.path.abspath(failed_imports_dir)
+            return None
         target_path = os.path.join(failed_imports_dir, folder_name)
 
         counter = 1
@@ -1185,8 +1185,10 @@ class GrabbedAlbum:
         if os.path.exists(folder_path):
             shutil.move(folder_path, target_path)
             logger.info(f"Failed import moved to: {target_path}")
+            return os.path.abspath(target_path)
 
-        return os.path.abspath(target_path)
+        logger.warning(f"Failed import source folder not found: {folder_path}")
+        return None
 
     def trigger_lidarr_import(self) -> None:
         """Ask Lidarr to scan the import folder, wait for the command to finish, and record failures."""
