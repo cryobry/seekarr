@@ -780,6 +780,59 @@ class WantedAlbums:
 
         return downloads
 
+    def filter_queued(self) -> Self:
+        """Return albums that are not already in Lidarr's download queue."""
+        if not self.albums:
+            return self
+
+        current_queue = []
+        total_queued = 1
+        page = 1
+
+        try:
+            while len(current_queue) < total_queued:
+                queue_page = lidarr.get_queue(
+                    page=page,
+                    sort_key="albums.title",
+                    sort_dir="ascending",
+                )
+                page_records = queue_page["records"]
+                total_queued = queue_page["totalRecords"]
+
+                if not page_records:
+                    if len(current_queue) < total_queued:
+                        logger.warning(
+                            "Lidarr returned an empty queue page before totalRecords was reached"
+                        )
+                    break
+
+                current_queue.extend(page_records)
+                page += 1
+        except PyarrError as ex:
+            logger.error(f"Failed to get queue details, so the queue was not filtered: {ex}")
+            return self
+
+        queued_ids = {
+            record["albumId"]
+            for record in current_queue
+            if "albumId" in record
+        }
+
+        for record in current_queue:
+            if "albumId" not in record:
+                logger.warning(f"Ignoring queue entry without albumId: {record.keys()}")
+
+        not_queued = []
+        for album in self.albums:
+            if album.id in queued_ids:
+                logger.info(
+                    f"Skipping album '{album.title}' because it's already in download queue"
+                )
+            else:
+                not_queued.append(album)
+
+        return type(self)(albums=not_queued)
+
 @dataclass
 class GrabbedAlbum:
     """An album's enqueued downloads, tracked from enqueue through Lidarr import.
@@ -1462,59 +1515,19 @@ def get_wanted_albums(cfg: AppConfig) -> WantedAlbums:
             raw_albums.extend(page_records)
             page += 1
 
-        remaining_albums = filter_queued_albums(
-            WantedAlbums(
-                albums=[prune_wanted_record(raw, cfg.source) for raw in raw_albums]
-            )
-        )
+        remaining_albums = WantedAlbums(
+            albums=[prune_wanted_record(raw, cfg.source) for raw in raw_albums]
+        ).filter_queued()
+
         if cfg.lidarr.search_type == "random":
             remaining_albums.shuffle()
 
     batch_size = max(1, cfg.lidarr.chunk_size)
     albums_to_process = remaining_albums.take(batch_size)
     if not fetched_wanted_list:
-        albums_to_process = filter_queued_albums(albums_to_process)
+        albums_to_process = albums_to_process.filter_queued()
     remaining_albums_by_source[cfg.source] = remaining_albums
     return albums_to_process
-
-
-def filter_queued_albums(albums: WantedAlbums) -> WantedAlbums:
-    """Drop wanted albums that are already in Lidarr's download queue."""
-    if not albums:
-        return albums
-
-    current_queue = []
-    total_queued = 1
-    page = 1
-    try:
-        while len(current_queue) < total_queued:
-            queue_page = lidarr.get_queue(page=page, sort_key="albums.title", sort_dir="ascending")
-            page_records = queue_page["records"]
-            total_queued = queue_page["totalRecords"]
-            if not page_records:
-                if len(current_queue) < total_queued:
-                    logger.warning("Lidarr returned an empty queue page before totalRecords was reached")
-                break
-            current_queue.extend(page_records)
-            page += 1
-    except PyarrError as ex:
-        logger.error(f"Failed to get queue details, so the queue was not filtered: {ex}")
-        return albums
-
-    queued_album_ids = set()
-    for record in current_queue:
-        if "albumId" in record:
-            queued_album_ids.add(record["albumId"])
-        else:
-            logger.warning(f"Ignoring queue entry without albumId: {record.keys()}")
-
-    not_queued = WantedAlbums()
-    for album in albums:
-        if album.id in queued_album_ids:
-            logger.info(f"Skipping album '{album.title}' because it's already in download queue")
-        else:
-            not_queued.append(album)
-    return not_queued
 
 
 def main():
