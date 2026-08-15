@@ -144,6 +144,15 @@ class AppConfig:
         invalid_sources = [source for source in sources if source not in ("missing", "cutoff_unmet")]
         if invalid_sources:
             raise ValueError(f"LIDARR_SOURCES contains unsupported values: {invalid_sources}")
+        search_type = str(
+            env_override(
+                "lidarr",
+                "search_type",
+                resolved_lidarr.get("search_type", "incrementing"),
+            )
+        ).lower().strip()
+        if search_type not in ("incrementing", "random"):
+            raise ValueError(f"[lidarr.search_type] - {search_type = } is not valid")
 
         lidarr = LidarrConfig(
             api_key=env_override("lidarr", "api_key", resolved_lidarr.get("api_key")),
@@ -153,7 +162,7 @@ class AppConfig:
             import_timeout=int(env_override("lidarr", "import_timeout", resolved_lidarr.get("import_timeout", 3600))),
             disable_sync=bool(env_override("lidarr", "disable_sync", resolved_lidarr.get("disable_sync", False))),
             sources=sources,
-            search_type=str(env_override("lidarr", "search_type", resolved_lidarr.get("search_type", "incrementing"))).lower().strip(),
+            search_type=search_type,
             chunk_size=int(env_override("lidarr", "chunk_size", resolved_lidarr.get("chunk_size", 10))),
             sort_key=str(env_override("lidarr", "sort_key", resolved_lidarr.get("sort_key", "albums.title"))).strip(),
             sort_dir=str(env_override("lidarr", "sort_dir", resolved_lidarr.get("sort_dir", "ascending"))).strip().lower(),
@@ -777,13 +786,13 @@ class WantedAlbums:
         last_index = len(self.albums) - 1
 
         for index, album in enumerate(self.albums):
-            search_start = time.time()
+            search_start = time.monotonic()
             download = album.queue_download()
 
             if download:
                 downloads.append(download)
 
-            remaining = (album.cfg.slskd.minimum_search_interval - (time.time() - search_start))
+            remaining = (album.cfg.slskd.minimum_search_interval - (time.monotonic() - search_start))
             if index < last_index and remaining > 0:
                 logger.info(f"Waiting {remaining:.1f}s to meet minimum_search_interval")
                 time.sleep(remaining)
@@ -1505,9 +1514,6 @@ def get_wanted_albums(cfg: AppConfig) -> WantedAlbums:
     remaining_albums = remaining_albums_by_source.get(cfg.source, WantedAlbums())
 
     if not remaining_albums:
-        if cfg.lidarr.search_type not in ("incrementing", "random"):
-            raise ValueError(f"[lidarr.search_type] - {cfg.lidarr.search_type = } is not valid")
-
         wanted_kwargs = {
             "missing": cfg.source == "missing",
             "page_size": 250,
@@ -1591,16 +1597,12 @@ def main():
             wanted_albums = WantedAlbums()
             for source, config in source_configs.items():
                 logger.info(f"Getting wanted albums from '{source}' list")
-                try:
-                    albums_to_append = get_wanted_albums(config)
-                    if albums_to_append:
-                        logger.info(f"Fetched {len(albums_to_append)} albums from '{source}' list that aren't on the deny list and/or blacklisted.")
-                        wanted_albums.extend(albums_to_append)
-                    else:
-                        logger.info(f"No albums fetched from '{source}' list that aren't on the deny list and/or blacklisted.")
-                except ValueError as ex:
-                    logger.error(f"An error occurred: {ex}")
-                    time.sleep(interval)
+                albums_to_append = get_wanted_albums(config)
+                if albums_to_append:
+                    logger.info(f"Fetched {len(albums_to_append)} albums from '{source}' list that aren't on the deny list and/or blacklisted.")
+                    wanted_albums.extend(albums_to_append)
+                else:
+                    logger.info(f"No albums fetched from '{source}' list that aren't on the deny list and/or blacklisted.")
 
             wanted_albums = wanted_albums.deduplicate()
             if not wanted_albums:
