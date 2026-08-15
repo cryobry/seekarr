@@ -1455,7 +1455,7 @@ def is_docker():
 
 def acquire_lock_file(path: str):
     """Acquire an OS lock that is released automatically if the process crashes."""
-    lock_file = open(path, "a+")
+    lock_file = open(path, "a")
     try:
         fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
