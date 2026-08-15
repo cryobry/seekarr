@@ -151,7 +151,7 @@ class AppConfig:
                 resolved_lidarr.get("search_type", "incrementing"),
             )
         ).lower().strip()
-        if search_type not in ("incrementing", "random"):
+        if search_type not in ("incrementing", "shuffle"):
             raise ValueError(f"[lidarr.search_type] - {search_type = } is not valid")
 
         lidarr = LidarrConfig(
@@ -629,7 +629,7 @@ class WantedAlbum(Album):
             logger.info(f"Found match from user: {username} for {len(matched_files)} tracks! Track attributes: {filetype}")
             logger.info(f"Average sequence match ratio: {total_match / len(matched_files)}")
             logger.info("SUCCESSFUL MATCH")
-            logger.info("-------------------")
+            logger.info("----------------------------")
             return matched_files
 
         return None
@@ -852,9 +852,7 @@ class WantedAlbums:
         not_queued = []
         for album in self.albums:
             if album.id in queued_ids:
-                logger.info(
-                    f"Skipping album '{album.title}' because it's already in download queue"
-                )
+                logger.info(f"Skipping album '{album.title}' because it's already in download queue")
             else:
                 not_queued.append(album)
 
@@ -1120,10 +1118,7 @@ class GrabbedAlbum:
             return self.fail("Failed grab")
 
         file["retry"] = file.get("retry", 0) + 1
-        if (
-            file["retry"] > self.MAX_FILE_RETRIES
-            or not self.requeue_file(file)
-        ):
+        if (file["retry"] > self.MAX_FILE_RETRIES or not self.requeue_file(file)):
             return self.fail("Failed grab")
 
         return False
@@ -1132,10 +1127,7 @@ class GrabbedAlbum:
         """Requeue a rejected transfer once the other transfers are stable."""
         required = self.required_files
 
-        if (
-            len(problems) == len(required)
-            or not self.cfg.slskd.requeue_failed_downloads
-        ):
+        if (len(problems) == len(required) or not self.cfg.slskd.requeue_failed_downloads):
             return self.fail("Failed grab")
 
         accounted = (sum(self.file_state(item) in self.STABLE for item in required) + len(problems))
@@ -1186,10 +1178,7 @@ class GrabbedAlbum:
         if elapsed >= self.cfg.slskd.stalled_timeout:
             return self.fail("Timeout waiting for download")
 
-        if (
-            states.count(self.REMOTE) == len(required_files)
-            and elapsed >= self.cfg.slskd.remote_queue_timeout
-        ):
+        if (states.count(self.REMOTE) == len(required_files) and elapsed >= self.cfg.slskd.remote_queue_timeout):
             return self.fail("Remote queue timeout")
 
         return self.handle_problems(problems)
@@ -1517,8 +1506,8 @@ def get_wanted_albums(cfg: AppConfig) -> WantedAlbums:
         wanted_kwargs = {
             "missing": cfg.source == "missing",
             "page_size": 250,
-            "sort_key": "id" if cfg.lidarr.search_type == "random" else cfg.lidarr.sort_key,
-            "sort_dir": "ascending" if cfg.lidarr.search_type == "random" else cfg.lidarr.sort_dir,
+            "sort_key": "id" if cfg.lidarr.search_type == "shuffle" else cfg.lidarr.sort_key,
+            "sort_dir": "ascending" if cfg.lidarr.search_type == "shuffle" else cfg.lidarr.sort_dir,
         }
         try:
             wanted_page = lidarr.get_wanted(page=1, **wanted_kwargs)
@@ -1548,7 +1537,7 @@ def get_wanted_albums(cfg: AppConfig) -> WantedAlbums:
             albums=[prune_wanted_record(raw, cfg.source) for raw in raw_albums]
         )
 
-        if cfg.lidarr.search_type == "random":
+        if cfg.lidarr.search_type == "shuffle":
             remaining_albums.shuffle()
 
     remaining_albums = remaining_albums.filter_queued().filter_eligible()

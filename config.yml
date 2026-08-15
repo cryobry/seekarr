@@ -16,13 +16,13 @@ lidarr:
     - missing
     - cutoff_unmet
 
-  # Chunk selection modes: incrementing, random
+  # Chunk selection modes: incrementing, shuffle
   # incrementing: splits the wanted list(s) into chunk_size-sized chunks and moves to the next one each run.
-  # random: shuffles the active list once per process and works through it in chunk_size-sized chunks each run.
+  # shuffle: randomizes the active list once per process and works through it in chunk_size-sized chunks each run.
   search_type: incrementing
   # Albums to process per loop. Set this higher than the wanted list to process all records per run.
   chunk_size: 20
-  # Column Lidarr sorts the wanted list by. Ignored when search_type is "random".
+  # Column Lidarr sorts the wanted list by. Ignored when search_type is "shuffle".
   # Valid values: id (default: fastest), albums.title, albums.releaseDate, albums.lastSearchTime, artists.sortName, albumType
   sort_key: id
   # Sort direction for sort_key: ascending, descending
