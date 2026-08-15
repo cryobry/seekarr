@@ -735,7 +735,7 @@ class WantedAlbums:
                 unique_albums[album.id] = album
         return type(self)(albums=list(unique_albums.values()))
 
-    def filter_list(self) -> Self:
+    def filter_eligible(self) -> Self:
         """Return albums that are eligible to be searched."""
         filtered = []
 
@@ -1462,33 +1462,24 @@ def prune_wanted_record(raw: dict, source: AlbumSource) -> WantedAlbum:
 
 
 def get_wanted_albums(cfg: AppConfig) -> WantedAlbums:
-    """Return the next batch of wanted albums for the active source configuration.
-
-    Reuses albums left over from the last fetch. When none remain, fetches Lidarr's complete
-    wanted list, removes albums already in Lidarr's download queue, and saves the unreturned
-    albums for later runs.
-    """
+    """Return the next batch of eligible wanted albums for this source."""
 
     remaining_albums = remaining_albums_by_source.get(cfg.source, WantedAlbums())
-    fetched_wanted_list = False
 
     if not remaining_albums:
-        fetched_wanted_list = True
         if cfg.lidarr.search_type not in ("incrementing", "random"):
             raise ValueError(f"[lidarr.search_type] - {cfg.lidarr.search_type = } is not valid")
 
         wanted_kwargs = {
             "missing": cfg.source == "missing",
-            # Page size used for the internal Lidarr API calls that bulk-fetch the wanted list.
-            # Unrelated to lidarr.chunk_size, which controls how many records get processed per run.
-            "page_size": 250, 
+            "page_size": 250,
             "sort_key": "id" if cfg.lidarr.search_type == "random" else cfg.lidarr.sort_key,
             "sort_dir": "ascending" if cfg.lidarr.search_type == "random" else cfg.lidarr.sort_dir,
         }
         try:
             wanted_page = lidarr.get_wanted(page=1, **wanted_kwargs)
         except PyarrError as ex:
-            logger.error(f"An error occurred when attempting to get records: {ex}")
+            logger.error(f"Failed to get wanted records: {ex}")
             return WantedAlbums()
 
         raw_albums = list(wanted_page["records"])
@@ -1498,7 +1489,7 @@ def get_wanted_albums(cfg: AppConfig) -> WantedAlbums:
             try:
                 wanted_page = lidarr.get_wanted(page=page, **wanted_kwargs)
             except PyarrError as ex:
-                logger.error(f"Failed to grab record: {ex}")
+                logger.error(f"Failed to get wanted page {page}: {ex}")
                 break
 
             page_records = wanted_page["records"]
@@ -1511,15 +1502,13 @@ def get_wanted_albums(cfg: AppConfig) -> WantedAlbums:
 
         remaining_albums = WantedAlbums(
             albums=[prune_wanted_record(raw, cfg.source) for raw in raw_albums]
-        ).filter_queued()
+        )
 
         if cfg.lidarr.search_type == "random":
             remaining_albums.shuffle()
 
-    batch_size = max(1, cfg.lidarr.chunk_size)
-    albums_to_process = remaining_albums.take(batch_size)
-    if not fetched_wanted_list:
-        albums_to_process = albums_to_process.filter_queued()
+    remaining_albums = remaining_albums.filter_queued().filter_eligible()
+    albums_to_process = remaining_albums.take(max(1, cfg.lidarr.chunk_size))
     remaining_albums_by_source[cfg.source] = remaining_albums
     return albums_to_process
 
@@ -1585,15 +1574,11 @@ def main():
 
             logger.info(f"Total wanted albums to process: {len(wanted_albums)}")
             try:
-                filtered_wanted_albums = wanted_albums.filter_list()
-                if filtered_wanted_albums:
-                    total_failed = filtered_wanted_albums.grab_most_wanted()
-                    if total_failed == 0:
-                        logger.info("Soulseekarr finished.")
-                    else:
-                        logger.info(f"{total_failed}: releases failed to find a match in the search results and are still wanted.")
+                total_failed = wanted_albums.grab_most_wanted()
+                if total_failed == 0:
+                    logger.info("Soulseekarr finished.")
                 else:
-                    logger.info("No releases fetched that aren't on the deny list and/or blacklisted.")
+                    logger.info(f"{total_failed}: releases failed to find a match in the search results and are still wanted.")
                 if cfg.slskd.remove_completed_downloads:
                     slskd.transfers.remove_completed_downloads()
             except Exception:
