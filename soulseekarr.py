@@ -217,7 +217,7 @@ class AppConfig:
                 if args.interval is not None
                 else os.getenv(
                     "LOOP_INTERVAL",
-                    os.getenv("SCRIPT_INTERVAL", os.getenv("APP_INTERVAL", data.get("interval", 300 if is_docker() else 0))),
+                    os.getenv("SCRIPT_INTERVAL", data.get("interval", 300 if is_docker() else 0)),
                 )
             ),
         )

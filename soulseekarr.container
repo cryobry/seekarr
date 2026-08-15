@@ -10,7 +10,7 @@ Image=docker.io/cryobry/soulseekarr:latest
 Pull=newer
 Volume=%h/.config/soulseekarr:/data:Z
 Volume=%h/downloads/htpc:/downloads:z
-Environment=SCRIPT_INTERVAL=300
+Environment=LOOP_INTERVAL=300
 Environment=TZ=UTC
 
 [Service]

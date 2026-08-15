@@ -17,7 +17,7 @@ in this one module. Do not split it into a package unless the user explicitly as
   per-source overrides — keep this precedence when adding new config fields. List overrides are
   comma-separated, trimmed, and empty entries are removed; invalid booleans, numbers, and
   `LIDARR_SOURCES` values raise configuration errors. The loop interval uses `LOOP_INTERVAL`
-  canonically, with `SCRIPT_INTERVAL` and `APP_INTERVAL` retained as fallbacks.
+  canonically, with `SCRIPT_INTERVAL` retained as fallback.
 - Access resolved settings via `cfg.lidarr.*` / `cfg.slskd.*` (or `album.cfg.lidarr.*`/`album.cfg.slskd.*`),
   never raw dict lookups outside `from_yaml`.
 - `config.yml` is read from disk once, at the top of `main()`, before the `--interval`/`LOOP_INTERVAL`

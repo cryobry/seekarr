@@ -57,7 +57,7 @@ cp config.yml "$HOME/.config/soulseekarr/config.yml"
 and prefixed with the section (similar to Slskd):
   - `lidarr.api_key` -> `LIDARR_API_KEY`
   - `slskd.minimum_filename_match_ratio` -> `SLSKD_MINIMUM_FILENAME_MATCH_RATIO`
-  - `interval` -> `LOOP_INTERVAL` (`SCRIPT_INTERVAL` and `APP_INTERVAL` are supported for backward compatibility)
+  - `interval` -> `LOOP_INTERVAL` (`SCRIPT_INTERVAL` is supported for backward compatibility)
 - Multi-option environment variables use comma-separated lists (e.g. `LIDARR_ACCEPTED_FORMATS=CD,Digital Media,Vinyl`).
 
 ### 4. Command-line options
@@ -70,7 +70,7 @@ and control where Soulseekarr runs and how often it checks for wanted releases.
 | `-c`, `--config-dir [PATH]` | Directory containing `config.yml` | Current working directory, or `/data` in Docker |
 | `-v`, `--var-dir [PATH]` | Directory for runtime files such as the lock file and logs | Current working directory, or `/data` in container |
 | `--no-lock-file` | Disable lock-file creation when running outside Docker | Lock file enabled |
-| `--interval SECONDS` | Override `interval` and loop forever; `0` runs once | `LOOP_INTERVAL`, then legacy `SCRIPT_INTERVAL`/`APP_INTERVAL`, then `config.yml`, then `300` in Docker or one run locally |
+| `--interval SECONDS` | Override `interval` and loop forever; `0` runs once | `LOOP_INTERVAL`, then legacy `SCRIPT_INTERVAL`, then `config.yml`, then `300` in Docker or one run locally |
 
 Example:
 
