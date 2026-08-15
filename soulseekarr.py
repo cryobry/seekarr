@@ -35,40 +35,7 @@ DEFAULT_LOGGING = {
     "backup_count": 3,
 }
 
-def env_override(section: str, key: str, value):
-    """Override a resolved config value with an env var named "<SECTION>_<KEY>".
-
-    Matches the YAML path (e.g. lidarr.api_key -> LIDARR_API_KEY), coercing the env var to
-    match the existing value's type.
-    """
-    env_name = f"{section}_{key}".upper()
-    raw = os.environ.get(env_name)
-    if raw is None:
-        return value
-    if isinstance(value, bool):
-        normalized = raw.strip().lower()
-        if normalized in ("1", "true", "yes", "on"):
-            return True
-        if normalized in ("0", "false", "no", "off"):
-            return False
-        raise ValueError(f"{env_name} must be a boolean, got {raw!r}")
-    if isinstance(value, list):
-        return [item.strip() for item in raw.split(",") if item.strip()]
-    if isinstance(value, int):
-        try:
-            return int(raw)
-        except ValueError as ex:
-            raise ValueError(f"{env_name} must be an integer, got {raw!r}") from ex
-    if isinstance(value, float):
-        try:
-            return float(raw)
-        except ValueError as ex:
-            raise ValueError(f"{env_name} must be a number, got {raw!r}") from ex
-    return raw
-
-
 AlbumSource = Literal["missing", "cutoff_unmet"]
-
 
 @dataclass
 class AlbumState:
@@ -331,7 +298,8 @@ class WantedAlbum(Album):
             logger.warning(f"Skipping {self.artist} - {self.title}: empty search query")
             return False
 
-        logger.info(f"Searching for '{self.source}' album: {self.artist} - {self.title} (query: '{query}')")
+        logger.info(f"Searching for '{self.source}' album: {self.artist} - {self.title}")
+        logger.debug(f"Search query: '{query}'")
 
         timeout = max(1, self.cfg.slskd.timeout)
         search_id = None
@@ -882,6 +850,7 @@ class WantedAlbums:
             )
 
             if cfg.lidarr.search_type == "shuffle" and not cfg.lidarr.shuffle_all:
+                logger.info(f"search_type: shuffle (shuffling '{cfg.source}' albums)")
                 remaining_albums.shuffle()
 
         remaining_albums = remaining_albums.filter_queued().filter_eligible()
@@ -1593,6 +1562,38 @@ def setup_logging(config: dict, var_dir: str) -> None:
         logger.info(f"Logging to file: {log_file_path}")
 
 
+def env_override(section: str, key: str, value):
+    """Override a resolved config value with an env var named "<SECTION>_<KEY>".
+
+    Matches the YAML path (e.g. lidarr.api_key -> LIDARR_API_KEY), coercing the env var to
+    match the existing value's type.
+    """
+    env_name = f"{section}_{key}".upper()
+    raw = os.environ.get(env_name)
+    if raw is None:
+        return value
+    if isinstance(value, bool):
+        normalized = raw.strip().lower()
+        if normalized in ("1", "true", "yes", "on"):
+            return True
+        if normalized in ("0", "false", "no", "off"):
+            return False
+        raise ValueError(f"{env_name} must be a boolean, got {raw!r}")
+    if isinstance(value, list):
+        return [item.strip() for item in raw.split(",") if item.strip()]
+    if isinstance(value, int):
+        try:
+            return int(raw)
+        except ValueError as ex:
+            raise ValueError(f"{env_name} must be an integer, got {raw!r}") from ex
+    if isinstance(value, float):
+        try:
+            return float(raw)
+        except ValueError as ex:
+            raise ValueError(f"{env_name} must be a number, got {raw!r}") from ex
+    return raw
+
+
 def main():
     """Parse CLI arguments, resolve configuration, then run Soulseekarr once or on a loop."""
     global lidarr, slskd, source_configs, album_states, remaining_albums_by_source
@@ -1641,8 +1642,7 @@ def main():
                     logger.info(f"No albums fetched from '{source}' list that aren't on the deny list and/or blacklisted.")
 
             wanted_albums = wanted_albums.deduplicate()
-            if cfg.lidarr.shuffle_all:
-                wanted_albums.shuffle()
+
             if not wanted_albums:
                 logger.info("No wanted albums available.")
                 if interval <= 0:
@@ -1651,6 +1651,11 @@ def main():
                 continue
 
             logger.info(f"Total wanted albums to process: {len(wanted_albums)}")
+
+            if cfg.lidarr.shuffle_all:
+                logger.info("shuffle_all: True (shuffling all wanted albums before processing)")
+                wanted_albums.shuffle()
+
             try:
                 total_failed = wanted_albums.grab_most_wanted()
                 if total_failed == 0:
