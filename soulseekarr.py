@@ -11,13 +11,13 @@ import shutil
 import difflib
 import logging
 import fcntl
-from datetime import datetime
 from urllib.parse import urljoin
 import copy
 from dataclasses import dataclass, field
 import music_tag
 import slskd_api
 import yaml
+from collections import Counter
 from requests.exceptions import HTTPError, RequestException
 from pyarr import LidarrAPI
 from pyarr.exceptions import PyarrError
@@ -60,6 +60,15 @@ def env_override(section: str, key: str, value):
 
 
 AlbumSource = Literal["missing", "cutoff_unmet"]
+
+
+@dataclass
+class AlbumState:
+    """State shared by every instance representing the same Lidarr album."""
+    grabbed: bool = False
+    import_failed: bool = False
+    import_pending: bool = False
+
 
 @dataclass
 class LidarrConfig:
@@ -115,7 +124,6 @@ class AppConfig:
     source: AlbumSource | None
     lidarr: LidarrConfig
     slskd: SlskdConfig
-    lock_file_path: str
     interval: int
 
     @classmethod
@@ -197,7 +205,6 @@ class AppConfig:
             source=source,
             lidarr=lidarr,
             slskd=slskd,
-            lock_file_path=os.path.join(args.var_dir, ".soulseekarr.lock"),
             interval=int(
                 args.interval
                 if args.interval is not None
@@ -211,15 +218,15 @@ class AppConfig:
 
 @dataclass
 class Album:
-    """A generic album record, used for both Lidarr wanted-list and Soulseek search results."""
+    """Identity, configuration, and persistent state for a Lidarr album."""
     id: int
     artistId: int
     artist: str
     title: str
-    releaseDate: str
     year: str
     source: AlbumSource
     cfg: AppConfig = field(init=False)
+    state: AlbumState = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         try:
@@ -230,17 +237,48 @@ class Album:
                 f"for album {self.artist} - {self.title}"
             ) from None
 
+            self.state = album_states.setdefault(self.id, AlbumState())
+
 @dataclass
 class WantedAlbum(Album):
-    """A pruned Lidarr wanted-list record, keeping only the fields Soulseekarr reads.
+    """A pruned Lidarr wanted album and its current search state.
 
     Lidarr's raw wanted-list response nests far more per album (images, ratings, full release
     media/tracks, statistics, etc.); trimming to this shape keeps memory use sane for large
     libraries. See prune_wanted_record().
     """
-    grab_failed: bool = False
-    # Populated by search_for_album(), keyed by username -> filetype -> [file_dir, ...].
+    failure: str | None = field(default=None, init=False)
     search_results: dict = field(default_factory=dict, init=False, repr=False)
+    folder_cache: dict = field(default_factory=dict, init=False, repr=False)
+
+    def skip_reason(self) -> str | None:
+        """Return why this album should be skipped, or None if it is eligible."""
+        if self.cfg.lidarr.failed_import_denylist and self.state.import_failed:
+            return "failed import"
+        if self.state.import_pending:
+            return "pending Lidarr import"
+        if self.cfg.lidarr.disable_sync and self.state.grabbed:
+            return "already grabbed"
+
+        for word in self.cfg.lidarr.title_blacklist:
+            if word and word.lower() in self.title.lower():
+                return f"blacklisted word {word!r}"
+
+        return None
+
+    def queue_download(self) -> GrabbedAlbum | None:
+        """Search for this album and enqueue the best available match."""
+        self.failure = None
+
+        if not self.search_for_album():
+            self.failure = "Search failed"
+            return None
+
+        download = self.find_download()
+        if download is None:
+            self.failure = "No matching download"
+
+        return download
 
     def search_for_album(self) -> bool:
         """Search slskd for an album, poll until the search completes, and cache matching results.
@@ -304,7 +342,7 @@ class WantedAlbum(Album):
                     return False
                 time.sleep(1)
 
-            search_results = slskd.searches.search_responses(search["id"])  # We use this API call twice. Let's just cache it locally.
+            search_results = slskd.searches.search_responses(search["id"])
             logger.info(f"Search returned {len(search_results)} results")
         except Exception:
             logger.exception(f"Failed to perform search via SLSKD: {query}")
@@ -315,287 +353,251 @@ class WantedAlbum(Album):
         if not search_results:
             return False
 
-        for result in search_results:  # Switching to cached version (one less API call)
+        for result in search_results:
             username = result["username"]
-            if username not in self.search_results:
-                # If we don't currently have a cache for a user set one up
-                self.search_results[username] = {}
+            user_results = self.search_results.setdefault(username, {})
 
             logger.info(f"Caching and truncating results for user: {username}")
             for file in result["files"]:
                 file_dir = file["filename"].rsplit("\\", 1)[0]
                 for allowed_filetype in self.cfg.slskd.allowed_filetypes:
-                    if verify_filetype(file, allowed_filetype):  # Check the filename for an allowed type
-                        if allowed_filetype not in self.search_results[username]:
-                            self.search_results[username][allowed_filetype] = [] # Init the cache for this allowed filetype
-                        if file_dir not in self.search_results[username][allowed_filetype]:
-                            self.search_results[username][allowed_filetype].append(file_dir)
+                    if verify_filetype(file, allowed_filetype):
+                        file_dirs = user_results.setdefault(allowed_filetype, [])
+                        if file_dir not in file_dirs:
+                            file_dirs.append(file_dir)
         return True
 
     def find_download(self) -> GrabbedAlbum | None:
-        """Find a download source for a wanted album by trying every allowed filetype and release.
-
-        For each quality, tries the single-disk match path first, falling back to the multi-disk
-        path for multi-media releases. Returns a populated `GrabbedAlbum` on success, or None.
-        """
-
+        """Find and enqueue a matching release in one of the allowed filetypes."""
         results = self.search_results
-
-        # Releases/tracks don't change per quality, so fetch them once and reuse across the
-        # allowed_filetypes loop below instead of hitting the Lidarr API for every quality.
         releases = lidarr.get_album(self.id)["releases"]
-        tracks_by_release: dict = {}
+        tracks_by_release = {}
 
-        for allowed_filetype in self.cfg.slskd.allowed_filetypes:
-            if not any(allowed_filetype in results[username] for username in results):
-                logger.debug(f"No search results for Quality: {allowed_filetype}. Skipping.")
+        for filetype in self.cfg.slskd.allowed_filetypes:
+            if not any(filetype in result for result in results.values()):
+                logger.debug(f"No search results for Quality: {filetype}. Skipping.")
                 continue
 
-            logger.debug(f"Checking for Quality: {allowed_filetype}")
-            remaining_releases = list(releases)
-            for _ in range(0, len(remaining_releases)):
-                if len(remaining_releases) == 0:
-                    break
-                release = self.choose_release(remaining_releases)
+            remaining = list(releases)
+            while remaining:
+                release = self.choose_release(remaining)
                 if release is None:
                     break
-                remaining_releases.remove(release)
+                remaining.remove(release)
+
                 release_id = release["id"]
                 if release_id not in tracks_by_release:
-                    tracks_by_release[release_id] = lidarr.get_tracks(artistId=self.artistId, albumId=self.id, albumReleaseId=release_id)
-                all_tracks = tracks_by_release[release_id]
-                found, downloads = self.try_enqueue(all_tracks, results, allowed_filetype)
-
-                if not found and self.cfg.lidarr.allow_multi_disc and len(release["media"]) > 1:
-                    found, downloads = self.try_multi_enqueue(release, all_tracks, results, allowed_filetype)
-
-                if found and downloads:
-                    return GrabbedAlbum(
-                        wanted_album=self,
-                        files=downloads,
-                        filetype=allowed_filetype,
+                    tracks_by_release[release_id] = lidarr.get_tracks(
+                        artistId=self.artistId,
+                        albumId=self.id,
+                        albumReleaseId=release_id,
                     )
+                tracks = tracks_by_release[release_id]
+
+                downloads = self.try_enqueue(tracks, results, filetype)
+                if (
+                    not downloads
+                    and self.cfg.lidarr.allow_multi_disc
+                    and len(release["media"]) > 1
+                ):
+                    downloads = self.try_multi_enqueue(
+                        release, tracks, results, filetype
+                    )
+                if downloads:
+                    return GrabbedAlbum(wanted_album=self, files=downloads)
+
         return None
 
-    def try_enqueue(self, all_tracks, results, allowed_filetype):
-        """Try to find and enqueue a single-disk album match from any user in `results`."""
-
-        for username in results:
-            if allowed_filetype not in results[username]:
+    def try_enqueue(self, tracks, results, filetype):
+        """Find and enqueue a single-directory album match."""
+        for username, user_results in results.items():
+            file_dirs = user_results.get(filetype)
+            if not file_dirs:
                 continue
+
             logger.debug(f"Parsing result from user: {username}")
-            file_dirs = results[username][allowed_filetype]
-            found, directory, file_dir, required_files = self.check_for_match(all_tracks, allowed_filetype, file_dirs, username)
-            if found:
-                directory = self.download_filter(allowed_filetype, directory)
-                files_to_download = list({file["filename"]: file for file in directory["files"]}.values())
-                files_to_download.extend(
-                    file for file in required_files
-                    if file["filename"] not in {download["filename"] for download in files_to_download}
-                )
-                directory["files"] = files_to_download
-                required_filenames = {file["filename"] for file in required_files}
-                for file in directory["files"]:
-                    file["required"] = file["filename"] in required_filenames
-                prefix_filenames_with_dir(directory, file_dir)
-                try:
-                    downloads = slskd_do_enqueue(username=username, files=directory["files"], file_dir=file_dir)
-                    required_filenames = {file["filename"] for file in required_files}
-                    accepted_filenames = {file["filename"] for file in downloads or []}
-                    if downloads and required_filenames <= accepted_filenames:
-                        return True, downloads
-                    else:
-                        if downloads:
-                            self.cancel_and_delete(downloads)
-                    logger.info(f"Failed to enqueue download to slskd for {self.artist} - {self.title} from {username}")
-                except Exception as e:
-                    logger.warning(f"Exception enqueueing tracks: {e}")
-                    logger.info(f"Exception enqueueing download to slskd for {self.artist} - {self.title} from {username}")
+            match = self.check_for_match(tracks, filetype, file_dirs, username)
+            if match:
+                downloads = self._enqueue_match(username, filetype, *match)
+                if downloads:
+                    return downloads
+
         logger.info(f"Failed to enqueue {self.artist} - {self.title}")
-        return False, None
+        return None
 
-    def try_multi_enqueue(self, release, all_tracks, results, allowed_filetype):
-        """Try to find and enqueue a multi-disk album match, sourcing each disk independently.
+    def try_multi_enqueue(self, release, tracks, results, filetype):
+        """Find every disc of a multi-disc release, then enqueue them together."""
+        media = release["media"]
+        if not self.cfg.lidarr.allow_multi_disc or len(media) <= 1:
+            return None
 
-        Requires every disk in the release to be matched (by any user) before enqueueing; if any
-        disk can't be sourced, the whole attempt fails with nothing downloaded.
-        """
-        if not self.cfg.lidarr.allow_multi_disc or len(release["media"]) <= 1:
-            return False, None
-
-        split_release = []
-        for media in release["media"]:
-            disk = {}
-            disk["source"] = None
-            disk["tracks"] = []
-            disk["disk_no"] = media["mediumNumber"]
-            disk["disk_count"] = len(release["media"])
-            for track in all_tracks:
-                if track["mediumNumber"] == media["mediumNumber"]:
-                    disk["tracks"].append(track)
-            split_release.append(disk)
-        total = len(split_release)
-        count_found = 0
+        sources = []
         used_sources = set()
-        for disk in split_release:
-            for username in results:
-                if allowed_filetype not in results[username]:
-                    continue
-                file_dirs = [
-                    file_dir
-                    for file_dir in results[username][allowed_filetype]
-                    if (username, file_dir) not in used_sources
-                ]
-                if not file_dirs:
-                    continue
-                found, directory, file_dir, required_files = self.check_for_match(disk["tracks"], allowed_filetype, file_dirs, username)
-                if found:
-                    directory = self.download_filter(allowed_filetype, directory)
-                    files_to_download = list({file["filename"]: file for file in directory["files"]}.values())
-                    files_to_download.extend(
-                        file for file in required_files
-                        if file["filename"] not in {download["filename"] for download in files_to_download}
-                    )
-                    directory["files"] = files_to_download
-                    required_filenames = {file["filename"] for file in required_files}
-                    for file in directory["files"]:
-                        file["required"] = file["filename"] in required_filenames
-                    disk["source"] = (username, directory, file_dir, required_files)
-                    used_sources.add((username, file_dir))
-                    count_found += 1
-                    break
-            else:
-                return (
-                    False,
-                    None,
-                )  # Only runs if we complete the loop without finding a source for the current disk regardless of how many other disks we located. All or nothing.
-        if count_found == total:
-            all_downloads = []
-            enqueued = 0
-            for disk in split_release:
-                username, directory, file_dir, required_files = disk["source"]
-                prefix_filenames_with_dir(directory, file_dir)
-                try:
-                    downloads = slskd_do_enqueue(username=username, files=directory["files"], file_dir=file_dir)
-                    required_filenames = {file["filename"] for file in required_files}
-                    accepted_filenames = {file["filename"] for file in downloads or []}
-                    if downloads and required_filenames <= accepted_filenames:
-                        for file in downloads:
-                            file["disk_no"] = disk["disk_no"]
-                            file["disk_count"] = disk["disk_count"]
-                        all_downloads.extend(downloads)
-                        enqueued += 1
-                    else:
-                        logger.info(f"Failed to enqueue download to slskd for {self.artist} - {self.title} from {username}")
-                        # Delete ALL other downloads in all_downloads list
-                        if downloads:
-                            self.cancel_and_delete(downloads)
-                        if all_downloads:
-                            self.cancel_and_delete(all_downloads)
-                        return False, None
-                except Exception:
-                    logger.exception("Exception enqueueing tracks")
-                    logger.info(f"Exception enqueueing download to slskd for {self.artist} - {self.title} from {username}")
-                    # Delete all other downloads in all_downloads list
-                    if all_downloads:
-                        self.cancel_and_delete(all_downloads)
-                    return False, None
-            if enqueued == total:
-                return True, all_downloads
-            else:
-                # Delete all other downloads
-                if len(all_downloads) > 0:
-                    self.cancel_and_delete(all_downloads)
-                return False, None
 
-        else:
-            return False, None
-
-    def check_for_match(self, tracks, allowed_filetype, file_dirs, username):
-        """Fetch (and cache) a user's file listing and return required matches plus the directory."""
-        for file_dir in file_dirs:
-            if username not in folder_cache:
-                logger.debug(f"Add user to cache: {username}")
-                folder_cache[username] = {}
-
-            if file_dir not in folder_cache[username]:
-                logger.debug(f"User: {username} Folder: {file_dir} not in cache. Fetching from SLSKD")
-
-                try:
-                    # Assumes slskd > 0.22.2, whose users.directory() returns a list of directories.
-                    directory = slskd.users.directory(username=username, directory=file_dir)[0]
-                except HTTPError as ex:
-                    status_code = ex.response.status_code if ex.response is not None else "unknown"
-                    logger.warning(f'HTTP error getting directory from user "{username}" folder "{file_dir}": {status_code}')
-                    if ex.response is not None and ex.response.text:
-                        logger.debug(f"SLSKD response body: {ex.response.text[:500]}")
-
-                    # slskd 5xx errors are generally transient server failures.
-                    if isinstance(status_code, int) and 500 <= status_code < 600:
-                        continue
-
-                    continue
-                except IndexError:
-                    logger.warning(f'Empty directory response from user "{username}" for folder "{file_dir}"')
-                    directory = {"files": []}
-                except RequestException:
-                    logger.exception(f'Network error getting directory from user: "{username}"')
-                    return False, {}, "", []
-                except Exception:
-                    logger.exception(f'Error getting directory from user: "{username}"')
-                    return False, {}, "", []
-                folder_cache[username][file_dir] = copy.deepcopy(directory)
-            else:
-                logger.debug(f"User: {username} Folder: {file_dir} in cache. Using cached value")
-                directory = copy.deepcopy(folder_cache[username][file_dir])
-
-            matching_audio_files = [
-                file
-                for file in directory["files"]
-                if verify_filetype(file, allowed_filetype)
+        for medium in media:
+            disk_no = medium["mediumNumber"]
+            disk_tracks = [
+                track for track in tracks
+                if track["mediumNumber"] == disk_no
             ]
 
-            if len(matching_audio_files) < len(tracks):
+            for username, user_results in results.items():
+                file_dirs = [
+                    file_dir for file_dir in user_results.get(filetype, [])
+                    if (username, file_dir) not in used_sources
+                ]
+                match = self.check_for_match(
+                    disk_tracks, filetype, file_dirs, username
+                )
+                if match:
+                    sources.append((disk_no, username, *match))
+                    used_sources.add((username, match[1]))
+                    break
+            else:
+                return None
+
+        all_downloads = []
+        for disk_no, username, directory, file_dir, required_files in sources:
+            downloads = self._enqueue_match(
+                username, filetype, directory, file_dir, required_files
+            )
+            if not downloads:
+                if all_downloads:
+                    self.cancel_and_delete(all_downloads)
+                return None
+
+            for file in downloads:
+                file["disk_no"] = disk_no
+                file["disk_count"] = len(media)
+            all_downloads.extend(downloads)
+
+        return all_downloads
+
+    def _enqueue_match(
+        self,
+        username,
+        filetype,
+        directory,
+        file_dir,
+        required_files,
+    ):
+        """Prepare and enqueue one matched directory."""
+        directory = self.download_filter(filetype, directory)
+        files = {file["filename"]: file for file in directory["files"]}
+        files.update({file["filename"]: file for file in required_files})
+        required_names = {file["filename"] for file in required_files}
+
+        for filename, file in files.items():
+            file["required"] = filename in required_names
+            file["filename"] = f"{file_dir}\\{filename}"
+
+        try:
+            downloads = slskd_do_enqueue(
+                username, list(files.values()), file_dir
+            )
+        except Exception:
+            logger.exception(
+                f"Exception enqueueing {self.artist} - "
+                f"{self.title} from {username}"
+            )
+            return None
+
+        accepted = {file["filename"] for file in downloads or []}
+        required = {
+            file["filename"] for file in files.values()
+            if file["required"]
+        }
+
+        if downloads and required <= accepted:
+            return downloads
+        if downloads:
+            self.cancel_and_delete(downloads)
+
+        logger.info(
+            f"Failed to enqueue {self.artist} - {self.title} from {username}"
+        )
+        return None
+
+    def check_for_match(self, tracks, filetype, file_dirs, username):
+        """Return the first directory containing a match for every required track."""
+        user_cache = self.folder_cache.setdefault(username, {})
+
+        for file_dir in file_dirs:
+            if file_dir in user_cache:
+                logger.debug(f"Using cached directory for {username}: {file_dir}")
+                directory = copy.deepcopy(user_cache[file_dir])
+            else:
+                logger.debug(f"Fetching directory for {username}: {file_dir}")
+                try:
+                    directory = slskd.users.directory(
+                        username=username, directory=file_dir
+                    )[0]
+                except HTTPError as ex:
+                    status = (
+                        ex.response.status_code
+                        if ex.response is not None
+                        else "unknown"
+                    )
+                    logger.warning(
+                        f'HTTP error getting directory from "{username}" '
+                        f'folder "{file_dir}": {status}'
+                    )
+                    if ex.response is not None and ex.response.text:
+                        logger.debug(
+                            f"SLSKD response body: {ex.response.text[:500]}"
+                        )
+                    continue
+                except IndexError:
+                    logger.warning(
+                        f'Empty directory response from "{username}" '
+                        f'for "{file_dir}"'
+                    )
+                    directory = {"files": []}
+                except RequestException:
+                    logger.exception(
+                        f'Network error getting directory from user: "{username}"'
+                    )
+                    return None
+                except Exception:
+                    logger.exception(
+                        f'Error getting directory from user: "{username}"'
+                    )
+                    return None
+
+                user_cache[file_dir] = copy.deepcopy(directory)
+
+            audio_files = [
+                file for file in directory["files"]
+                if verify_filetype(file, filetype)
+            ]
+
+            # Allow directories containing additional bonus tracks.
+            if len(audio_files) < len(tracks):
                 continue
 
-            matched_files = self.album_match(tracks, matching_audio_files, username, allowed_filetype)
+            matched_files = self.album_match(
+                tracks, audio_files, username, filetype
+            )
             if matched_files:
-                return True, directory, file_dir, matched_files
-        return False, {}, "", []
+                return directory, file_dir, matched_files
 
-    def download_filter(self, allowed_filetype, directory):
-        """Filter a slskd directory listing down to the allowed filetype (and whitelist, if enabled).
+        return None
 
-        This prevents downloading m3u/cue/txt/jpg/etc. files that are sometimes stored alongside
-        the music files in the same folder.
-        """
-        logger.debug("Filtering downloads")
-
+    def download_filter(self, filetype, directory):
+        """Limit a directory to the configured audio type and optional sidecars."""
         if self.cfg.slskd.filtering:
-            whitelist = []  # Init an empty list to take just the allowed_filetype
-            whitelist = copy.deepcopy(self.cfg.slskd.extensions_whitelist)  # Copy the whitelist to allow us to append the allowed_filetype
-            whitelist.append(allowed_filetype.split(" ")[0])
-            unwanted = []
-            logger.debug(f"Accepted extensions: {whitelist}")
-            for file in directory["files"]:
-                for extension in whitelist:
-                    if file["filename"].split(".")[-1].lower() == extension.lower():
-                        break  # Jump out and don't add wanted files to the unwanted list
-                else:
-                    unwanted.append(file["filename"])  # Add to list of files to remove from the wanted list
-                    logger.debug(f"Unwanted file: {file['filename']}")
-            if len(unwanted) > 0:
-                temp = []
-                logger.debug(f"Unwanted Files: {unwanted}")
-                for file in directory["files"]:
-                    if file["filename"] not in unwanted:
-                        logger.debug(f"Added file to queue: {file['filename']}")
-                        temp.append(file)  # Build the new list of files
-                directory["files"] = temp
-                for files in temp:
-                    logger.debug(f"File in final list: {files['filename']}")
-                return directory  # Return the modified list
-        return directory  # If we didn't find unwanted files or we aren't filtering just return the original list
+            extensions = {
+                ext.lower()
+                for ext in self.cfg.slskd.extensions_whitelist
+            }
+            extensions.add(filetype.split()[0].lower())
+            directory["files"] = [
+                file for file in directory["files"]
+                if file["filename"].rsplit(".", 1)[-1].lower() in extensions
+            ]
+            logger.debug(f"Accepted extensions: {sorted(extensions)}")
+
+        return directory
 
     def album_match(self, lidarr_tracks, slskd_tracks, username, filetype):
         """Return a one-to-one file match for every Lidarr track, or None.
@@ -670,23 +672,15 @@ class WantedAlbum(Album):
         """Cancel each in-progress slskd download in `files` and remove its local download folder."""
         _cancel_and_delete_files(self.cfg, files)
 
-    def add_to_failed_import_denylist(self, folder_path: str | None = None) -> None:
-        album_key = str(self.id)
-        if album_key not in failed_import_denylist:
-            failed_import_denylist[album_key] = FailedImport(
-                album=self,
-                failed_at=datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
-                folder_path=folder_path,
-            )
-            logger.info(f"Added to failed import denylist: {self.artist} - {self.title} (ID: {self.id})")
-
-    def is_blacklisted(self) -> bool:
-        """Check whether an album's title contains any blacklisted words."""
-        for word in self.cfg.lidarr.title_blacklist:
-            if word != "" and word.lower() in self.title.lower():
-                logger.info(f"Skipping '{self.artist} - {self.title}' due to blacklisted word: {word}")
-                return True
-        return False
+    def add_to_failed_import_denylist(self) -> None:
+        """Remember this failed import for the lifetime of the process."""
+        if self.state.import_failed:
+            return
+        self.state.import_failed = True
+        logger.info(
+            f"Added to failed import denylist: "
+            f"{self.artist} - {self.title} (ID: {self.id})"
+        )
 
     def choose_release(self, releases):
         """Pick the best release to search for from an album's list of Lidarr releases.
@@ -790,107 +784,62 @@ class WantedAlbums:
         return type(self)(albums=list(unique_albums.values()))
 
     def filter_list(self) -> Self:
-        """Apply each album's source-specific failed-import, grabbed, and title filters."""
-        filtered_albums: list[WantedAlbum] = []
+        """Return albums that are eligible to be searched."""
+        filtered = []
 
         for album in self.albums:
-            if (
-                album.cfg.lidarr.failed_import_denylist
-                and str(album.id) in failed_import_denylist
-            ):
+            reason = album.skip_reason()
+            if reason:
                 logger.info(
-                    f"Skipping failed import album: {album.artist} - "
+                    f"Skipping {reason}: {album.artist} - "
                     f"{album.title} (ID: {album.id})"
                 )
-                continue
+            else:
+                filtered.append(album)
 
-            if album.id in pending_imports:
-                logger.info(
-                    f"Skipping pending Lidarr import: {album.artist} - "
-                    f"{album.title} (ID: {album.id})"
-                )
-                continue
-
-            if album.cfg.lidarr.disable_sync and album.id in grabbed_albums:
-                logger.info(
-                    f"Skipping already grabbed album: {album.artist} - "
-                    f"{album.title} (ID: {album.id})"
-                )
-                continue
-
-            if album.is_blacklisted():
-                logger.info(
-                    f"Skipping blacklisted album: {album.artist} - "
-                    f"{album.title} (ID: {album.id})"
-                )
-                continue
-
-            filtered_albums.append(album)
-
-        return type(self)(albums=filtered_albums)
+        return type(self)(albums=filtered)
 
     def grab_most_wanted(self) -> int:
-        """Search, enqueue, monitor, and import every album in `albums`.
+        """Search, download, and import every album in this collection."""
+        downloads = self.search_and_queue()
 
-        Searches and enqueues downloads for all albums first, then monitors and imports them as a
-        batch. Returns the total count of albums that failed to search or failed to grab.
-        """
-
-        grab_list, failed_search = self.search_and_queue()
-
-        total_albums = len(grab_list)
-        logger.info(f"Total Downloads added: {total_albums}")
-        for album in grab_list:
+        logger.info(f"Total downloads added: {len(downloads)}")
+        for album in downloads:
             logger.info(f"Album: {album.title} Artist: {album.artist}")
-        grab_list.monitor_downloads()
+        downloads.monitor_downloads()
 
-        failed_grab_count = sum(album.grab_failed for album in self.albums)
-        logger.info(f"Failed to grab: {failed_grab_count}")
-        for album in self.albums:
-            if album.grab_failed:
-                logger.info(f"Album: {album.title} Artist: {album.artist}")
+        failures = [album for album in self.albums if album.failure]
+        logger.info(f"Failed albums: {len(failures)}")
 
-        count = len(failed_search) + failed_grab_count
-        for album in failed_search:
-            logger.info(f"Search failed for Album: {album.title} - Artist: {album.artist}")
+        for album in failures:
+            logger.info(f"{album.failure}: {album.artist} - {album.title}")
 
-        return count
+        return len(failures)
 
-    def search_and_queue(self) -> tuple[GrabbedAlbums, WantedAlbums]:
-        """Search and enqueue every album in `albums`, respecting `minimum_search_interval`.
+    def search_and_queue(self) -> GrabbedAlbums:
+        """Search and enqueue every album, respecting the search interval."""
+        downloads = GrabbedAlbums()
+        last_index = len(self.albums) - 1
 
-        Returns (grab_list, failed_search): `grab_list` holds the enqueued downloads and
-        `failed_search` holds albums with no slskd search results. Other grab failures are marked
-        directly on their `WantedAlbum`.
-        """
-        grab_list = GrabbedAlbums()
-        failed_search = WantedAlbums()
-
-        album_iterator = iter(self)
-        album = next(album_iterator, None)
-
-        while album is not None:
-            next_album = next(album_iterator, None)
+        for index, album in enumerate(self.albums):
             search_start = time.time()
-            if album.search_for_album():
-                entry: GrabbedAlbum | None = album.find_download()
-                if entry is not None:
-                    grab_list.append(entry)
-                else:
-                    album.grab_failed = True
-            else:
-                failed_search.append(album)
+            download = album.queue_download()
 
-            if album.cfg.slskd.minimum_search_interval > 0 and next_album is not None:
-                elapsed = time.time() - search_start
-                remaining = album.cfg.slskd.minimum_search_interval - elapsed
-                if remaining > 0:
-                    logger.info(f"Search completed in {elapsed:.1f}s, waiting {remaining:.1f}s to meet minimum_search_interval")
-                    time.sleep(remaining)
+            if download:
+                downloads.append(download)
 
-            album = next_album
+            remaining = (
+                album.cfg.slskd.minimum_search_interval
+                - (time.time() - search_start)
+            )
+            if index < last_index and remaining > 0:
+                logger.info(
+                    f"Waiting {remaining:.1f}s to meet "
+                    "minimum_search_interval"
+                )
+                time.sleep(remaining)
 
-        return grab_list, failed_search
+        return downloads
 
 @dataclass
 class GrabbedAlbum:
@@ -901,11 +850,22 @@ class GrabbedAlbum:
     Identity fields (id, artist, title, ...) are read from `wanted_album` instead of being
     duplicated here.
     """
+    MAX_FILE_RETRIES = 4
+    SUCCESS = "Completed, Succeeded"
+    REMOTE = "Queued, Remotely"
+
+    HARD_ERRORS = {
+        "Completed, Cancelled",
+        "Completed, TimedOut",
+        "Completed, Errored",
+        "Completed, Aborted",
+    }
+    ERRORS = HARD_ERRORS | {"Completed, Rejected"}
+    STABLE = {SUCCESS, REMOTE, "Queued, Locally"}
+
     wanted_album: WantedAlbum
     files: list[dict]
-    filetype: str
     count_start: float = field(default_factory=time.time)
-    status_query_failures: int = 0
     rejected_retries: int = 0
     import_folder: str | None = None
     staging_folder: str | None = None
@@ -913,10 +873,6 @@ class GrabbedAlbum:
     @property
     def id(self) -> int:
         return self.wanted_album.id
-
-    @property
-    def artistId(self) -> int:
-        return self.wanted_album.artistId
 
     @property
     def artist(self) -> str:
@@ -927,38 +883,41 @@ class GrabbedAlbum:
         return self.wanted_album.title
 
     @property
-    def releaseDate(self) -> str:
-        return self.wanted_album.releaseDate
-
-    @property
     def year(self) -> str:
         return self.wanted_album.year
-
-    @property
-    def source(self) -> AlbumSource:
-        return self.wanted_album.source
 
     @property
     def cfg(self) -> AppConfig:
         return self.wanted_album.cfg
 
+    @property
+    def required_files(self) -> list[dict]:
+        return [
+            file for file in self.files
+            if file.get("required", True)
+        ]
+
+    @staticmethod
+    def file_state(file: dict) -> str | None:
+        return (file.get("status") or {}).get("state")
+
     def process_completed_album(self) -> None:
         """Move a fully-downloaded album into its import folder and trigger a Lidarr import.
 
         Renames/moves the downloaded files into a single folder, tags them, and asks Lidarr to
-        scan it. Rolls back the moved files if anything fails partway through, and records the
-        album's `grab_failed` flag (and the failed-import denylist) if the Lidarr import itself fails.
-        If `disable_sync` is set, skips the Lidarr import entirely and just tracks the grab.
+        scan it. Rolls back the moved files if anything fails partway through, and records a
+        failure if the Lidarr import itself fails. If `disable_sync` is set, skips the Lidarr
+        import entirely and just tracks the grab.
         """
 
-        if self.cfg.slskd.rename_download_folders is True:
+        if self.cfg.slskd.rename_download_folders:
             staging_folder_name = sanitize_folder_name(self.artist + " - " + self.title + " (" + self.year + ")")
         else:
             staging_folder_name = self.files[0]["file_dir"].split("\\")[-1]
         self.staging_folder = safe_path(self.cfg.slskd.download_dir, staging_folder_name)
         if self.staging_folder is None:
             logger.error("Refusing to use an invalid slskd download directory")
-            self.wanted_album.grab_failed = True
+            self.wanted_album.failure = "Download processing failed"
             return
         self.import_folder = os.path.join(self.cfg.lidarr.download_dir, staging_folder_name)
 
@@ -968,13 +927,13 @@ class GrabbedAlbum:
         }
         if None in source_dirs:
             logger.error("Refusing to use an invalid slskd source directory")
-            self.wanted_album.grab_failed = True
+            self.wanted_album.failure = "Download processing failed"
             return
         staging_folder_created = False
         if os.path.exists(self.staging_folder):
             if not os.path.isdir(self.staging_folder) or self.staging_folder not in source_dirs:
                 logger.error(f"Refusing to reuse existing staging directory: {self.staging_folder}")
-                self.wanted_album.grab_failed = True
+                self.wanted_album.failure = "Download processing failed"
                 return
         else:
             try:
@@ -982,7 +941,7 @@ class GrabbedAlbum:
                 staging_folder_created = True
             except OSError:
                 logger.exception(f"Failed to create staging directory: {self.staging_folder}")
-                self.wanted_album.grab_failed = True
+                self.wanted_album.failure = "Download processing failed"
                 return
 
         success, rm_dirs = self.move_album_files()
@@ -992,7 +951,7 @@ class GrabbedAlbum:
                     os.rmdir(self.staging_folder)
                 except OSError:
                     logger.warning(f"Could not remove temp import directory {self.staging_folder}")
-            self.wanted_album.grab_failed = True
+                    self.wanted_album.failure = "Download processing failed"
             return
 
         for rm_dir in rm_dirs:
@@ -1004,7 +963,7 @@ class GrabbedAlbum:
 
         if self.cfg.lidarr.disable_sync:
             logger.info(f"Sync disabled. Skipping Lidarr import of {self.artist} - {self.title}")
-            grabbed_albums.add(self.id)
+            self.wanted_album.state.grabbed = True
             return
 
         logger.info(f"Attempting Lidarr import of {self.artist} - {self.title}")
@@ -1096,35 +1055,20 @@ class GrabbedAlbum:
                     ok = False
         return ok
 
-    def downloads_all_done(self):
-        """Summarize this album's download progress from its files' current statuses.
+    def download_progress(self) -> tuple[bool, list[dict], int]:
+        """Return completion, problem files, and remote-queued count."""
+        files = self.required_files
+        states = [self.file_state(file) for file in files]
+        problems = [
+            file for file in files
+            if self.file_state(file) in self.ERRORS
+        ]
 
-        Returns (all_done, error_list, remote_queue_count), where error_list is None if there are
-        no failed files.
-        """
-        all_done = True
-        error_list = []
-        remote_queue = 0
-        for file in (file for file in self.files if file.get("required", True)):
-            status = file.get("status")
-            if not isinstance(status, dict) or not isinstance(status.get("state"), str) or not status["state"]:
-                all_done = False
-                continue
-            if status["state"] != "Completed, Succeeded":
-                all_done = False
-            if status["state"] in [
-                "Completed, Cancelled",
-                "Completed, TimedOut",
-                "Completed, Errored",
-                "Completed, Rejected",
-                "Completed, Aborted",
-            ]:
-                error_list.append(file)
-            if status["state"] == "Queued, Remotely":
-                remote_queue += 1
-        if not len(error_list) > 0:
-            error_list = None
-        return all_done, error_list, remote_queue
+        return (
+            all(state == self.SUCCESS for state in states),
+            problems,
+            states.count(self.REMOTE),
+        )
 
     def discard_incomplete_optional_files(self) -> None:
         """Cancel optional transfers that did not complete before required files finished."""
@@ -1140,6 +1084,128 @@ class GrabbedAlbum:
     def cancel_and_delete(self) -> None:
         """Cancel each in-progress slskd download for this album and remove its local download folder."""
         _cancel_and_delete_files(self.cfg, self.files)
+
+    def fail(self, reason: str) -> bool:
+        """Cancel this album, record its failure, and mark it terminal."""
+        self.cancel_and_delete()
+        self.wanted_album.failure = reason
+        logger.info(f"{reason}: {self.artist} - {self.title}")
+        return True
+
+    def requeue_file(self, file: dict) -> bool:
+        """Requeue one failed transfer and update its slskd ID."""
+        logger.info(f"Download error. Requeue file: {file['filename']}")
+
+        downloads = slskd_do_enqueue(
+            file["username"],
+            [{
+                "filename": file["filename"],
+                "size": file["size"],
+                "required": file.get("required", True),
+            }],
+            file["file_dir"],
+        )
+        if not downloads:
+            return False
+
+        file["id"] = downloads[0]["id"]
+        return True
+
+    def handle_hard_error(self, file: dict, problems: list[dict]) -> bool:
+        """Requeue a hard error, or fail the album when it cannot be retried."""
+        if (
+            len(problems) == len(self.required_files)
+            or not self.cfg.slskd.requeue_failed_downloads
+        ):
+            return self.fail("Failed grab")
+
+        file["retry"] = file.get("retry", 0) + 1
+        if (
+            file["retry"] > self.MAX_FILE_RETRIES
+            or not self.requeue_file(file)
+        ):
+            return self.fail("Failed grab")
+
+        return False
+
+    def handle_rejected(self, file: dict, problems: list[dict]) -> bool:
+        """Requeue a rejected transfer once the other transfers are stable."""
+        required = self.required_files
+
+        if (
+            len(problems) == len(required)
+            or not self.cfg.slskd.requeue_failed_downloads
+        ):
+            return self.fail("Failed grab")
+
+        accounted = (
+            sum(
+                self.file_state(item) in self.STABLE
+                for item in required
+            )
+            + len(problems)
+        )
+        if accounted < len(required):
+            return False
+
+        retry_limit = int(len(required) * 1.2)
+        if (
+            self.rejected_retries >= retry_limit
+            or not self.requeue_file(file)
+        ):
+            return self.fail("Failed grab")
+
+        self.rejected_retries += 1
+        return False
+
+    def handle_problems(self, problems: list[dict]) -> bool:
+        """Handle current transfer errors, returning True if the album failed."""
+        for file in problems:
+            if (
+                self.file_state(file) in self.HARD_ERRORS
+                and self.handle_hard_error(file, problems)
+            ):
+                return True
+
+        rejected = next(
+            (
+                file for file in problems
+                if self.file_state(file) == "Completed, Rejected"
+            ),
+            None,
+        )
+        if rejected is not None:
+            return self.handle_rejected(rejected, problems)
+
+        return False
+
+    def poll(self) -> bool:
+        """Poll this album once, returning True when it is terminal."""
+        elapsed = time.time() - self.count_start
+
+        if not self.refresh_download_status():
+            if elapsed >= self.cfg.slskd.stalled_timeout:
+                return self.fail("Timeout waiting for download status")
+            return False
+
+        done, problems, remote_count = self.download_progress()
+
+        if done:
+            logger.info(f"Completed download of {self.artist} - {self.title}")
+            self.discard_incomplete_optional_files()
+            self.process_completed_album()
+            return True
+
+        if elapsed >= self.cfg.slskd.stalled_timeout:
+            return self.fail("Timeout waiting for download")
+
+        if (
+            remote_count == len(self.required_files)
+            and elapsed >= self.cfg.slskd.remote_queue_timeout
+        ):
+            return self.fail("Remote queue timeout")
+
+        return self.handle_problems(problems)
 
     def move_failed_import(self, src_path) -> str | None:
         """Move a failed Lidarr import's folder into `cfg.slskd.failed_imports_dir`, avoiding name clashes."""
@@ -1184,7 +1250,7 @@ class GrabbedAlbum:
                 break
             if time.time() >= deadline:
                 logger.error(f"Timed out waiting for Lidarr import of {self.artist} - {self.title}")
-                pending_imports.add(self.id)
+                self.wanted_album.state.import_pending = True
                 return
             time.sleep(2)
 
@@ -1193,7 +1259,8 @@ class GrabbedAlbum:
             or current_task.get("status") == "failed"
             or current_task.get("result") == "unsuccessful"
         )
-        self.wanted_album.grab_failed = failed
+        if failed:
+            self.wanted_album.failure = "Lidarr import failed"
 
         try:
             logger.info(f"{current_task['commandName']} {current_task['message']} from: {current_task['body']['path']}")
@@ -1202,13 +1269,12 @@ class GrabbedAlbum:
             logger.error(current_task)
 
         if failed:
-            folder_path = None
             try:
-                folder_path = self.move_failed_import(current_task["body"]["path"])
+                self.move_failed_import(current_task["body"]["path"])
             except Exception:
                 logger.exception("Error moving failed Lidarr import")
             if self.cfg.lidarr.failed_import_denylist:
-                self.wanted_album.add_to_failed_import_denylist(folder_path)
+                self.wanted_album.add_to_failed_import_denylist()
 
 
 @dataclass
@@ -1225,137 +1291,15 @@ class GrabbedAlbums:
     def append(self, album: GrabbedAlbum) -> None:
         self.albums.append(album)
 
-    def extend(self, albums: Iterable[GrabbedAlbum]) -> None:
-        self.albums.extend(albums)
-
     def monitor_downloads(self) -> None:
-        """Poll slskd until every album in `grab_list` finishes, errors out, or times out.
-
-        Handles per-file hard errors (cancelled/timed out/errored/aborted) and rejections by
-        requeuing individual files (up to a retry limit) before giving up on the whole album, and
-        hands completed albums off to `process_completed_album`.
-        """
-        MAX_FILE_RETRIES = 4  # Max requeue attempts per file for hard errors (Errored, Cancelled, etc.)
-
-        def delete_album(album: GrabbedAlbum, reason: str) -> None:
-            self.albums.remove(album)
-            album.cancel_and_delete()
-            logger.info(f"{reason} Album: {album.title} Artist: {album.artist}")
-            album.wanted_album.grab_failed = True
-
-        def fail_album(album: GrabbedAlbum, condition: bool, reason="Failed grab of") -> bool:
-            """Delete the album if `condition` is true. Returns `condition` for one-line early-outs."""
-            if condition:
-                delete_album(album, reason)
-            return condition
-
-        def requeue_file(album, file):
-            """Requeue a single errored file. Returns True on success, False if enqueue failed."""
-            data_dict = [{"filename": file["filename"], "size": file["size"], "required": file.get("required", True)}]
-            logger.info(f"Download error. Requeue file: {file['filename']}")
-            requeue = slskd_do_enqueue(file["username"], data_dict, file["file_dir"])
-            if not requeue:
-                return False
-
-            file["id"] = requeue[0]["id"]
-            time.sleep(1)
-            album.refresh_download_status()
-            return True
-
-        def handle_hard_error(album: GrabbedAlbum, file, problems):
-            """Handle Cancelled/TimedOut/Errored/Aborted files.
-
-            Returns True if the album was deleted (caller should stop processing this album).
-            """
-            if fail_album(album, len(problems) == len(album.files) or not album.cfg.slskd.requeue_failed_downloads):
-                return True
-            file.setdefault("retry", 0)
-            file["retry"] += 1
-            if fail_album(album, file["retry"] > MAX_FILE_RETRIES):
-                return True
-            return fail_album(album, not requeue_file(album, file))
-
-        def handle_rejected(album: GrabbedAlbum, file, problems):
-            """Handle Rejected files.
-
-            Returns True if the album was deleted or a requeue was attempted (caller should stop
-            processing this album this iteration). Rejected files often indicate grab limits; we
-            wait for all other files to reach a stable state before requeuing.
-            """
-            if fail_album(album, len(problems) == len(album.files) or not album.cfg.slskd.requeue_failed_downloads):
-                return True
-            # Only requeue once all non-problem files have settled (no files mid-transfer).
-            stable_states = ("Completed, Succeeded", "Queued, Remotely", "Queued, Locally")
-            accounted = sum(1 for f in album.files if f["status"]["state"] in stable_states) + len(problems)
-            if accounted < len(album.files):
-                return False
-            if fail_album(album, album.rejected_retries >= int(len(album.files) * 1.2)):
-                return True
-            if fail_album(album, not requeue_file(album, file)):
-                return True
-            album.rejected_retries += 1
-            return True  # Requeued one file; wait for next monitoring iteration
-
-        while True:
+        """Poll active albums until every album reaches a terminal state."""
+        while self.albums:
             for album in self.albums.copy():
-
-                if not album.refresh_download_status():
-                    album.status_query_failures += 1
-                    elapsed = time.time() - album.count_start
-                    if fail_album(
-                        album,
-                        elapsed >= album.cfg.slskd.stalled_timeout,
-                        "Timeout waiting for download status of",
-                    ):
-                        continue
-                    continue
-                album.status_query_failures = 0
-
-                album_done, problems, queued = album.downloads_all_done()
-
-                elapsed = time.time() - album.count_start
-
-                if album_done:
-                    logger.info(f"Completed download of Album: {album.title} Artist: {album.artist}")
-                    album.discard_incomplete_optional_files()
-                    album.process_completed_album()
+                if album.poll():
                     self.albums.remove(album)
-                    continue
 
-                if fail_album(album, elapsed >= album.cfg.slskd.stalled_timeout, "Timeout waiting for download of"):
-                    continue
-                if fail_album(album, queued == len(album.files) and elapsed >= album.cfg.slskd.remote_queue_timeout, "Timeout waiting for download of"):
-                    continue
-
-                if problems:
-                    logger.debug("Files with errors detected.")
-                    for file in problems:
-                        if album not in self.albums:
-                            break
-                        logger.debug(f"Checking {file['filename']}")
-                        state = file["status"]["state"]
-                        if state in ("Completed, Cancelled", "Completed, TimedOut", "Completed, Errored", "Completed, Aborted"):
-                            if handle_hard_error(album, file, problems):
-                                break
-                        elif state == "Completed, Rejected":
-                            if handle_rejected(album, file, problems):
-                                break
-                        else:
-                            logger.error(f"Unexpected file state in problem list: {state}")
-
-            if not self.albums:
-                break
-
-            time.sleep(5)
-
-
-@dataclass
-class FailedImport:
-    """A denylisted album that failed Lidarr import, plus bookkeeping about the failure."""
-
-    album: WantedAlbum
-    failed_at: str
-    folder_path: str | None
+            if self.albums:
+                time.sleep(5)
 
 
 def sanitize_folder_name(folder_name):
@@ -1400,24 +1344,11 @@ def _cancel_and_delete_files(cfg: AppConfig, files: list[dict]) -> None:
 
 
 def release_trackcount_mode(releases):
-    track_count = {}
-
-    for release in releases:
-        trackcount = release["trackCount"]
-        if trackcount in track_count:
-            track_count[trackcount] += 1
-        else:
-            track_count[trackcount] = 1
-
-    most_common_trackcount = None
-    max_count = 0
-
-    for trackcount, count in track_count.items():
-        if count > max_count:
-            max_count = count
-            most_common_trackcount = trackcount
-
-    return most_common_trackcount
+    counts = Counter(
+        release["trackCount"]
+        for release in releases
+    )
+    return counts.most_common(1)[0][0] if counts else None
 
 
 def verify_filetype(file, allowed_filetype):
@@ -1523,12 +1454,6 @@ def slskd_do_enqueue(username, files, file_dir):
     ]
 
 
-def prefix_filenames_with_dir(directory, file_dir):
-    """Rewrite each file's filename to include its full remote directory path, as slskd's enqueue API expects."""
-    for file in directory["files"]:
-        file["filename"] = file_dir + "\\" + file["filename"]
-
-
 def is_docker():
     return os.getenv("IN_DOCKER") is not None
 
@@ -1595,7 +1520,6 @@ def prune_wanted_record(raw: dict, source: AlbumSource) -> WantedAlbum:
         artistId=raw["artistId"],
         artist=raw["artist"]["artistName"],
         title=raw["title"],
-        releaseDate=raw["releaseDate"],
         year=raw["releaseDate"][0:4],
         source=source,
     )
@@ -1636,20 +1560,14 @@ def get_wanted_albums(cfg: AppConfig) -> WantedAlbums:
         page = 2
         while len(raw_albums) < total_albums:
             try:
-                wanted_page = lidarr.get_wanted(
-                    page=page,
-                    **wanted_kwargs,
-                )
+                wanted_page = lidarr.get_wanted(page=page, **wanted_kwargs)
             except PyarrError as ex:
                 logger.error(f"Failed to grab record: {ex}")
                 break
 
             page_records = wanted_page["records"]
             if not page_records:
-                logger.warning(
-                    "Lidarr returned an empty page before "
-                    "totalRecords was reached"
-                )
+                logger.warning("Lidarr returned an empty page before totalRecords was reached")
                 break
 
             raw_albums.extend(page_records)
@@ -1690,11 +1608,9 @@ def filter_queued_albums(albums: WantedAlbums) -> WantedAlbums:
                     logger.error(f"Failed to get queue details: {ex}")
                     break
                 page_records = next_page["records"]
-
                 if not page_records:
                     logger.warning("Lidarr returned an empty page before totalRecords was reached")
                     break
-
                 current_queue.extend(page_records)
                 page += 1
 
@@ -1706,16 +1622,11 @@ def filter_queued_albums(albums: WantedAlbums) -> WantedAlbums:
                 logger.warning(f"Dropping entry due to missing key in keylist: [{album.keys()}]")
 
         not_queued = WantedAlbums()
-
         for album in albums:
             if album.id in queued_album_ids:
-                logger.info(
-                    f"Skipping album '{album.title}' because "
-                    "it's already in download queue"
-                )
+                logger.info(f"Skipping album '{album.title}' because it's already in download queue")
                 continue
             not_queued.append(album)
-
         return not_queued
     except PyarrError as ex:
         logger.error(f"Failed to get queue details so not filtering based on queue: {ex}")
@@ -1724,109 +1635,42 @@ def filter_queued_albums(albums: WantedAlbums) -> WantedAlbums:
 
 def main():
     """Parse CLI arguments, resolve configuration, then run Soulseekarr once or on a loop."""
-    global lidarr, slskd, source_configs
-    global folder_cache, grabbed_albums, failed_import_denylist, pending_imports, remaining_albums_by_source
-    # Allow some overrides to be passed to the script
+    global lidarr, slskd, source_configs, album_states, remaining_albums_by_source
     parser = argparse.ArgumentParser(description="""Soulseekarr reads all of your "wanted" albums/artists from Lidarr and downloads them using Slskd""")
-
-    default_data_directory = os.getcwd()
-
-    if is_docker():
-        default_data_directory = "/data"
-
-    parser.add_argument(
-        "-c",
-        "--config-dir",
-        default=default_data_directory,
-        const=default_data_directory,
-        nargs="?",
-        type=str,
-        help="Config directory (default: %(default)s)",
-    )
-
-    parser.add_argument(
-        "-v",
-        "--var-dir",
-        default=default_data_directory,
-        const=default_data_directory,
-        nargs="?",
-        type=str,
-        help="Var directory (default: %(default)s)",
-    )
-
-    parser.add_argument(
-        "--no-lock-file",
-        action="store_false",
-        dest="lock_file",
-        default=True,
-        help="Disable lock file creation",
-    )
-
-    parser.add_argument(
-        "--interval",
-        type=int,
-        default=None,
-        help="Seconds to wait between runs, overriding LOOP_INTERVAL and config.yml. Use 0 to run once.",
-    )
-
+    default_data_directory = "/data" if is_docker() else os.getcwd()
+    parser.add_argument("-c", "--config-dir", default=default_data_directory, const=default_data_directory, nargs="?", type=str, help="Config directory (default: %(default)s)")
+    parser.add_argument("-v", "--var-dir", default=default_data_directory, const=default_data_directory, nargs="?", type=str, help="Var directory (default: %(default)s)")
+    parser.add_argument("--no-lock-file", action="store_false", dest="lock_file", default=True, help="Disable lock file creation")
+    parser.add_argument("--interval", type=int, default=None, help="Seconds to wait between runs, overriding LOOP_INTERVAL and config.yml. Use 0 to run once.")
     args = parser.parse_args()
 
     lock_file_path = os.path.join(args.var_dir, ".soulseekarr.lock")
     config_file_path = os.path.join(args.config_dir, "config.yml")
-
     lock_file = None
-
     try:
         if not is_docker() and args.lock_file:
             lock_file = acquire_lock_file(lock_file_path)
             if lock_file is None:
                 return
-
         if not os.path.exists(config_file_path) and migrate_soularr_ini_config(args.config_dir):
             return
-
         if not os.path.exists(config_file_path):
-            if is_docker():
-                logger.error('Config file does not exist! Please mount "/data" and place your "config.yml" file there.')
-            else:
-                logger.error("Config file does not exist! Please place it in the working directory.")
+            logger.error('Config file does not exist! Please mount "/data" and place your "config.yml" file there.' if is_docker() else "Config file does not exist! Please place it in the working directory.")
             return
 
         with open(config_file_path, "r") as config_file:
             raw_config = expand_env_vars(yaml.safe_load(config_file) or {})
         setup_logging(raw_config, args.var_dir)
-
         cfg = AppConfig.from_yaml(raw_config, args)
         interval: int = cfg.interval
-
-        # Initialize the API clients with the resolved configuration
         slskd = slskd_api.SlskdClient(host=cfg.slskd.host_url, api_key=cfg.slskd.api_key, url_base=cfg.slskd.url_base)
         lidarr = LidarrAPI(urljoin(f"{cfg.lidarr.host_url.rstrip('/')}/", cfg.lidarr.url_base.strip("/")), cfg.lidarr.api_key)
-
-        # Return a list of wanted list-specific AppConfig instances
-        source_configs = {
-            source: AppConfig.from_yaml(raw_config, args, source=source)
-            for source in cfg.lidarr.sources
-        }
-
-        # folder_cache persists across --interval/LOOP_INTERVAL loop iterations
-        # within the same process; a fresh process still starts with these empty.
-        folder_cache = {}
-        # Albums grabbed while Lidarr sync is disabled, so we don't regrab them on later loops
-        # in the same run (Lidarr never learns about them, so it can't tell us itself).
-        grabbed_albums = set()
-        # Albums that failed Lidarr import, keyed by str(album id). In-memory only (not persisted to
-        # disk), so it resets on process restart same as grabbed_albums.
-        failed_import_denylist = {}
-        # Albums with an import command that timed out; the command may still complete in Lidarr.
-        pending_imports = set()
-        # Albums still to process from the most recent Lidarr fetch, keyed by source. Each run takes
-        # one batch from this list; when it is empty, get_wanted_albums() fetches a fresh wanted list.
+        source_configs = {source: AppConfig.from_yaml(raw_config, args, source=source) for source in cfg.lidarr.sources}
+        album_states = {}
         remaining_albums_by_source = {}
 
         while True:
             wanted_albums = WantedAlbums()
-            # Grab wanted albums from each configured source
             for source, config in source_configs.items():
                 logger.info(f"Getting wanted albums from '{source}' list")
                 try:
@@ -1836,11 +1680,9 @@ def main():
                         wanted_albums.extend(albums_to_append)
                     else:
                         logger.info(f"No albums fetched from '{source}' list that aren't on the deny list and/or blacklisted.")
-                        continue
                 except ValueError as ex:
                     logger.error(f"An error occurred: {ex}")
                     time.sleep(interval)
-                    continue
 
             wanted_albums = wanted_albums.deduplicate()
             if not wanted_albums:
@@ -1851,8 +1693,6 @@ def main():
                 continue
 
             logger.info(f"Total wanted albums to process: {len(wanted_albums)}")
-            logger.debug(f"Fetched {len(wanted_albums)} albums from the '{' and '.join(source_configs.keys())}' list(s) that aren't on the deny list and/or blacklisted.")
-
             try:
                 filtered_wanted_albums = wanted_albums.filter_list()
                 if filtered_wanted_albums:
@@ -1873,7 +1713,6 @@ def main():
                 time.sleep(interval)
             else:
                 break
-
     finally:
         if lock_file is not None:
             lock_file.close()

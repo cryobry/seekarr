@@ -25,26 +25,23 @@ additional modules unless the user explicitly asks for it.
   loop starts. Config/interval changes require a process restart to take effect — this is
   intentional; do not reintroduce per-iteration reloading.
 - `lidarr.import_timeout` bounds waiting for Lidarr import commands. Albums whose import command
-  times out are held in the in-memory `pending_imports` set and skipped for the rest of the process,
+  times out set their `AlbumState.import_pending` flag and are skipped for the rest of the process,
   because the Lidarr command may still complete.
-- Global module state (`lidarr`, `slskd`, `source_configs`, `folder_cache`, `broken_user`,
-  `grabbed_albums`, `failed_import_denylist`, `remaining_albums_by_source`) is initialized once
-  before the loop in `main()`, not reset per iteration. `grabbed_albums` persists across
-  `--interval`/`LOOP_INTERVAL` loop iterations within the same process so albums grabbed while
-  `disable_sync` is on aren't regrabbed on the next iteration (Lidarr never learns about them, so it
-  can't tell us itself). `remaining_albums_by_source` caches unprocessed wanted albums, but each
-  selected batch is rechecked against the current Lidarr queue. Failed-import filtering consults
-  the live `failed_import_denylist` by album ID, so cached albums see later failures. Per-album search
-  results live on `WantedAlbum.search_results` rather than a global cache, since they're only ever
-  read by the same instance that populated them.
+- Global module state (`lidarr`, `slskd`, `source_configs`, `album_states`,
+  `remaining_albums_by_source`) is initialized once before the loop in `main()`, not reset per
+  iteration. `album_states` is keyed by Lidarr album ID so `grabbed`, `import_failed`, and
+  `import_pending` survive recreation of a `WantedAlbum` on a later loop iteration. This keeps
+  albums grabbed while `disable_sync` is enabled from being regrabbed. `remaining_albums_by_source`
+  caches unprocessed wanted albums, but each selected batch is rechecked against the current Lidarr
+  queue. `WantedAlbum` owns its current search results, folder cache, and failure state.
 - `GrabbedAlbum` doesn't inherit `Album` or duplicate identity fields (`id`, `artist`, `title`,
   etc.) — it holds a `wanted_album: WantedAlbum` reference and exposes those as properties that
-  delegate to it. Keep new grab-tracking state that's really about the underlying album (not the
-  download attempt itself) on `WantedAlbum`, not duplicated onto `GrabbedAlbum`.
+  delegate to it. It owns transfer polling, retry, completion, and import processing; keep
+  cross-instance album state on `AlbumState` and current-search state on `WantedAlbum`.
 - Matching/enqueueing/import functions that take an `album` parameter (e.g. the old
   `album_match`, `check_ratio`, `try_enqueue`, `try_multi_enqueue`, `check_for_match`,
   `download_filter`, `release_format_accepted` on `WantedAlbum`; `trigger_lidarr_import`,
-  `move_failed_import`, `refresh_download_status`, `downloads_all_done` on `GrabbedAlbum`) are
+  `move_failed_import`, `refresh_download_status`, `download_progress`, and `poll` on `GrabbedAlbum`) are
   methods on the relevant album class instead of free functions — add new album-scoped logic as a
   method on `WantedAlbum`/`GrabbedAlbum` rather than a module-level function taking an album
   argument. `album_match()` assigns Soulseek files one-to-one and returns only the matched files
