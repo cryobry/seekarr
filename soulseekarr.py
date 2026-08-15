@@ -365,7 +365,7 @@ class WantedAlbum(Album):
 
         for filetype in self.cfg.slskd.allowed_filetypes:
             if not any(filetype in result for result in results.values()):
-                logger.debug(f"No search results for Quality: {filetype}. Skipping.")
+                logger.debug(f"No search results for {filetype}. Skipping.")
                 continue
 
             remaining = list(releases)
@@ -1402,15 +1402,6 @@ def is_docker():
     return os.getenv("IN_DOCKER") is not None
 
 
-def remove_lock_file(path: str) -> None:
-    """Docker doesn't use a lock file, so only remove it outside Docker."""
-    if not is_docker():
-        try:
-            os.remove(path)
-        except FileNotFoundError:
-            pass
-
-
 def acquire_lock_file(path: str):
     """Acquire an OS lock that is released automatically if the process crashes."""
     lock_file = open(path, "a+")
@@ -1420,10 +1411,6 @@ def acquire_lock_file(path: str):
         lock_file.close()
         logger.info("Soulseekarr instance is already running.")
         return None
-    lock_file.seek(0)
-    lock_file.truncate()
-    lock_file.write(str(os.getpid()))
-    lock_file.flush()
     return lock_file
 
 
@@ -1616,7 +1603,6 @@ def main():
     finally:
         if lock_file is not None:
             lock_file.close()
-            remove_lock_file(lock_file_path)
 
 
 if __name__ == "__main__":
