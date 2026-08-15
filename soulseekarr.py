@@ -315,7 +315,9 @@ class WantedAlbum(Album):
 
             while slskd.searches.state(search_id, False)["state"] == "InProgress":
                 if time.monotonic() >= deadline:
-                    logger.warning(f"SLSKD search remained in progress after {timeout + 5}s; stopping it and using partial results")
+                    logger.warning(
+                        f"SLSKD search did not complete within its {timeout}s timeout "
+                        f"+ 5s grace; stopping it and using partial results")
                     slskd.searches.stop(search_id)
                     break
                 time.sleep(1)
@@ -1255,41 +1257,32 @@ def _cancel_and_delete_files(cfg: AppConfig, files: list[dict]) -> None:
 
 
 def verify_filetype(file, allowed_filetype):
-    """Check whether a slskd search result file matches an `allowed_filetypes` config entry.
+    """Return whether a search-result file matches an allowed filetype and quality."""
+    extension, _, attributes = allowed_filetype.partition(" ")
+    current_extension = file["filename"].rsplit(".", 1)[-1]
 
-    Matches on file extension, and if the config entry also specifies quality attributes
-    (bitrate, or bitdepth/samplerate), verifies those against the file's metadata too.
-    """
-    current_filetype = file["filename"].split(".")[-1]
-    allowed_parts = allowed_filetype.split(" ", 1)
-
-    if current_filetype.lower() != allowed_parts[0].lower():
+    if current_extension.lower() != extension.lower():
         return False
-    if len(allowed_parts) == 1:
-        return True  # No quality attributes specified, so the extension match is enough.
+    if not attributes:
+        return True
 
-    selected_attributes = allowed_parts[1]
+    if "/" not in attributes:
+        bitrate = file.get("bitRate")
+        return bool(bitrate) and str(bitrate) == attributes
 
-    # If it is a bitdepth/samplerate pair instead of a simple bitrate
-    if "/" in selected_attributes:
-        selected_bitdepth, selected_samplerate_raw = selected_attributes.split("/", 1)
-        try:
-            selected_samplerate = str(int(float(selected_samplerate_raw) * 1000))
-        except ValueError:
-            logger.warning("Invalid samplerate in selected_attributes")
-            return False
-
-        bitdepth = file.get("bitDepth")
-        samplerate = file.get("sampleRate")
-        if not bitdepth or not samplerate:
-            return False
-        return str(bitdepth) == str(selected_bitdepth) and str(samplerate) == str(selected_samplerate)
-
-    # If it is a bitrate
-    bitrate = file.get("bitRate")
-    if not bitrate:
+    bitdepth, samplerate = attributes.split("/", 1)
+    try:
+        samplerate = str(int(float(samplerate) * 1000))
+    except ValueError:
+        logger.warning("Invalid samplerate in allowed filetype")
         return False
-    return str(bitrate) == selected_attributes
+
+    file_bitdepth = file.get("bitDepth")
+    file_samplerate = file.get("sampleRate")
+    if not file_bitdepth or not file_samplerate:
+        return False
+
+    return str(file_bitdepth) == bitdepth and str(file_samplerate) == samplerate
 
 
 def slskd_do_enqueue(username, files, file_dir):
