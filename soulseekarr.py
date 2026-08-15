@@ -412,6 +412,9 @@ class WantedAlbum(Album):
                     if file["filename"] not in {download["filename"] for download in files_to_download}
                 )
                 directory["files"] = files_to_download
+                required_filenames = {file["filename"] for file in required_files}
+                for file in directory["files"]:
+                    file["required"] = file["filename"] in required_filenames
                 prefix_filenames_with_dir(directory, file_dir)
                 try:
                     downloads = slskd_do_enqueue(username=username, files=directory["files"], file_dir=file_dir)
@@ -465,6 +468,9 @@ class WantedAlbum(Album):
                         if file["filename"] not in {download["filename"] for download in files_to_download}
                     )
                     directory["files"] = files_to_download
+                    required_filenames = {file["filename"] for file in required_files}
+                    for file in directory["files"]:
+                        file["required"] = file["filename"] in required_filenames
                     disk["source"] = (username, directory, file_dir, required_files)
                     count_found += 1
                     break
@@ -1091,7 +1097,8 @@ class GrabbedAlbum:
             except Exception:
                 logger.exception(f"Error getting download status of {file['filename']}")
                 file["status"] = None
-                ok = False
+                if file.get("required", True):
+                    ok = False
         return ok
 
     def downloads_all_done(self):
@@ -1103,7 +1110,7 @@ class GrabbedAlbum:
         all_done = True
         error_list = []
         remote_queue = 0
-        for file in self.files:
+        for file in (file for file in self.files if file.get("required", True)):
             status = file.get("status")
             if not isinstance(status, dict) or not isinstance(status.get("state"), str) or not status["state"]:
                 all_done = False
@@ -1123,6 +1130,17 @@ class GrabbedAlbum:
         if not len(error_list) > 0:
             error_list = None
         return all_done, error_list, remote_queue
+
+    def discard_incomplete_optional_files(self) -> None:
+        """Cancel optional transfers that did not complete before required files finished."""
+        optional_files = [
+            file for file in self.files
+            if not file.get("required", True)
+            and (file.get("status") or {}).get("state") != "Completed, Succeeded"
+        ]
+        if optional_files:
+            _cancel_and_delete_files(self.cfg, optional_files)
+            self.files = [file for file in self.files if file not in optional_files]
 
     def cancel_and_delete(self) -> None:
         """Cancel each in-progress slskd download for this album and remove its local download folder."""
@@ -1236,7 +1254,7 @@ class GrabbedAlbums:
 
         def requeue_file(album, file):
             """Requeue a single errored file. Returns True on success, False if enqueue failed."""
-            data_dict = [{"filename": file["filename"], "size": file["size"]}]
+            data_dict = [{"filename": file["filename"], "size": file["size"], "required": file.get("required", True)}]
             logger.info(f"Download error. Requeue file: {file['filename']}")
             requeue = slskd_do_enqueue(file["username"], data_dict, file["file_dir"])
             if not requeue:
@@ -1302,6 +1320,7 @@ class GrabbedAlbums:
 
                 if album_done:
                     logger.info(f"Completed download of Album: {album.title} Artist: {album.artist}")
+                    album.discard_incomplete_optional_files()
                     album.process_completed_album()
                     self.albums.remove(album)
                     continue
@@ -1458,7 +1477,8 @@ def slskd_do_enqueue(username, files, file_dir):
     existing_ids = {file["id"] for file in before_directory["files"] if "id" in file}
 
     try:
-        enqueue = slskd.transfers.enqueue(username=username, files=files)
+        enqueue_files = [{"filename": file["filename"], "size": file["size"]} for file in files]
+        enqueue = slskd.transfers.enqueue(username=username, files=enqueue_files)
     except Exception:
         logger.debug("Enqueue failed", exc_info=True)
         return None
@@ -1499,6 +1519,7 @@ def slskd_do_enqueue(username, files, file_dir):
             "file_dir": file_dir,
             "username": username,
             "size": file["size"],
+            "required": file.get("required", True),
         }
         for file in files
         if file["filename"] in accepted_ids
