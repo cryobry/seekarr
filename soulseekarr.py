@@ -532,8 +532,6 @@ class WantedAlbum(Album):
 
     def check_for_match(self, tracks, allowed_filetype, file_dirs, username):
         """Fetch (and cache) a user's file listing and return required matches plus the directory."""
-        if username in broken_user:
-            return False, {}, "", []
         for file_dir in file_dirs:
             if username not in folder_cache:
                 logger.debug(f"Add user to cache: {username}")
@@ -555,9 +553,7 @@ class WantedAlbum(Album):
                     if isinstance(status_code, int) and 500 <= status_code < 600:
                         continue
 
-                    broken_user.append(username)
-                    logger.debug(f"Updated broken users {broken_user}")
-                    return False, {}, "", []
+                    continue
                 except IndexError:
                     logger.warning(f'Empty directory response from user "{username}" for folder "{file_dir}"')
                     directory = {"files": []}
@@ -1849,7 +1845,7 @@ def filter_queued_albums(albums: WantedAlbums) -> WantedAlbums:
 def main():
     """Parse CLI arguments, resolve configuration, then run Soulseekarr once or on a loop."""
     global lidarr, slskd, source_configs
-    global folder_cache, broken_user, grabbed_albums, failed_import_denylist, pending_imports, remaining_albums_by_source
+    global folder_cache, grabbed_albums, failed_import_denylist, pending_imports, remaining_albums_by_source
     # Allow some overrides to be passed to the script
     parser = argparse.ArgumentParser(description="""Soulseekarr reads all of your "wanted" albums/artists from Lidarr and downloads them using Slskd""")
 
@@ -1933,10 +1929,9 @@ def main():
             for source in cfg.lidarr.sources
         }
 
-        # folder_cache/broken_user persist across --interval/LOOP_INTERVAL loop iterations
+        # folder_cache persists across --interval/LOOP_INTERVAL loop iterations
         # within the same process; a fresh process still starts with these empty.
         folder_cache = {}
-        broken_user = []
         # Albums grabbed while Lidarr sync is disabled, so we don't regrab them on later loops
         # in the same run (Lidarr never learns about them, so it can't tell us itself).
         grabbed_albums = set()
