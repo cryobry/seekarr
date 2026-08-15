@@ -801,9 +801,7 @@ class WantedAlbums:
 
                 if not page_records:
                     if len(current_queue) < total_queued:
-                        logger.warning(
-                            "Lidarr returned an empty queue page before totalRecords was reached"
-                        )
+                        logger.warning("Lidarr returned an empty queue page before totalRecords was reached")
                     break
 
                 current_queue.extend(page_records)
@@ -1338,6 +1336,11 @@ def slskd_do_enqueue(username, files, file_dir):
     """
     try:
         before = slskd.transfers.get_downloads(username=username)
+    except HTTPError as ex:
+        if ex.response is None or ex.response.status_code != 404:
+            logger.warning(f"Failed to snapshot existing downloads for {username} before enqueue", exc_info=True)
+            return None
+        before = {"directories": []}
     except Exception:
         logger.warning(f"Failed to snapshot existing downloads for {username} before enqueue", exc_info=True)
         return None
