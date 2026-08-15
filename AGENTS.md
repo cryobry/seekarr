@@ -2,9 +2,9 @@
 
 ## Architecture
 
-Soulseekarr is a **single-file Python script** ([soulseekarr.py](soulseekarr.py)) — everything (config
-dataclasses, Lidarr/Slskd API calls, matching logic, download monitoring, CLI entrypoint) lives
-in this one module. Do not split it into a package unless the user explicitly asks for it.
+Soulseekarr keeps its runtime in the single-file Python script ([soulseekarr.py](soulseekarr.py));
+legacy config migration lives in [migration.py](migration.py). Do not split runtime behavior into
+additional modules unless the user explicitly asks for it.
 
 - `LidarrConfig` / `SlskdConfig` / `AppConfig` (dataclasses) model `config.yml`. `AppConfig.from_yaml`
   merges the top-level `lidarr`/`slskd` defaults with an optional per-`source` override block
