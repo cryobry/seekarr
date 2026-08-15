@@ -1143,23 +1143,34 @@ class GrabbedAlbum:
         )  # Album all tagged up and in a correctly named folder. This should work more reliably
         logger.info(f"Starting Lidarr import for: {self.title} ID: {command['id']}")
 
+        deadline = time.time() + self.cfg.slskd.stalled_timeout
         while True:
             current_task = lidarr.get_command(command["id"])
             if current_task["status"] in ("completed", "failed"):
                 break
+            if time.time() >= deadline:
+                logger.error(f"Timed out waiting for Lidarr import of {self.artist} - {self.title}")
+                self.wanted_album.grab_failed = True
+                return
             time.sleep(2)
+
+        failed = current_task["status"] == "failed"
+        self.wanted_album.grab_failed = failed
 
         try:
             logger.info(f"{current_task['commandName']} {current_task['message']} from: {current_task['body']['path']}")
-
-            if current_task["status"] == "failed":
-                folder_path = self.move_failed_import(current_task["body"]["path"])
-                self.wanted_album.grab_failed = True
-                if self.cfg.lidarr.failed_import_denylist:
-                    self.wanted_album.add_to_failed_import_denylist(folder_path)
         except Exception:
             logger.exception("Error printing lidarr task message")
             logger.error(current_task)
+
+        if failed:
+            folder_path = None
+            try:
+                folder_path = self.move_failed_import(current_task["body"]["path"])
+            except Exception:
+                logger.exception("Error moving failed Lidarr import")
+            if self.cfg.lidarr.failed_import_denylist:
+                self.wanted_album.add_to_failed_import_denylist(folder_path)
 
 
 @dataclass
