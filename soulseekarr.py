@@ -1298,15 +1298,15 @@ class GrabbedAlbums:
 
                 elapsed = time.time() - album.count_start
 
-                if fail_album(album, elapsed >= album.cfg.slskd.stalled_timeout, "Timeout waiting for download of"):
-                    continue
-                if fail_album(album, queued == len(album.files) and elapsed >= album.cfg.slskd.remote_queue_timeout, "Timeout waiting for download of"):
-                    continue
-
                 if album_done:
                     logger.info(f"Completed download of Album: {album.title} Artist: {album.artist}")
                     album.process_completed_album()
                     self.albums.remove(album)
+                    continue
+
+                if fail_album(album, elapsed >= album.cfg.slskd.stalled_timeout, "Timeout waiting for download of"):
+                    continue
+                if fail_album(album, queued == len(album.files) and elapsed >= album.cfg.slskd.remote_queue_timeout, "Timeout waiting for download of"):
                     continue
 
                 if problems:
