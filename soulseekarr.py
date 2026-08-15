@@ -270,15 +270,19 @@ class WantedAlbum(Album):
         """Search for this album and enqueue the best available match."""
         self.failure = None
 
-        if not self.search_for_album():
-            self.failure = "Search failed"
-            return None
+        try:
+            if not self.search_for_album():
+                self.failure = "Search failed"
+                return None
 
-        download = self.find_download()
-        if download is None:
-            self.failure = "No matching download"
+            download = self.find_download()
+            if download is None:
+                self.failure = "No matching download"
 
-        return download
+            return download
+        finally:
+            self.search_results.clear()
+            self.folder_cache.clear()
 
     def search_for_album(self) -> bool:
         """Search slskd and cache result directories by user and filetype."""
