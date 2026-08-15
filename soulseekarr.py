@@ -901,7 +901,8 @@ class GrabbedAlbum:
     wanted_album: WantedAlbum
     files: list[dict]
     filetype: str
-    count_start: float | None = None
+    count_start: float = field(default_factory=time.time)
+    status_query_failures: int = 0
     rejected_retries: int = 0
     import_folder: str | None = None
     staging_folder: str | None = None
@@ -1282,12 +1283,19 @@ class GrabbedAlbums:
             for album in self.albums.copy():
 
                 if not album.refresh_download_status():
+                    album.status_query_failures += 1
+                    elapsed = time.time() - album.count_start
+                    if fail_album(
+                        album,
+                        elapsed >= album.cfg.slskd.stalled_timeout,
+                        "Timeout waiting for download status of",
+                    ):
+                        continue
                     continue
+                album.status_query_failures = 0
 
                 album_done, problems, queued = album.downloads_all_done()
 
-                if album.count_start is None:
-                    album.count_start = time.time()
                 elapsed = time.time() - album.count_start
 
                 if fail_album(album, elapsed >= album.cfg.slskd.stalled_timeout, "Timeout waiting for download of"):
