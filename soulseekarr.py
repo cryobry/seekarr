@@ -702,8 +702,13 @@ class WantedAlbum(Album):
         Accepted countries and formats are requirements, not fallback preferences.
         """
 
+        def is_multi_disc(release) -> bool:
+            return len(release.get("media", [])) > 1 or release.get("mediumCount", 1) > 1
+
         if self.cfg.lidarr.use_selected_lidarr_release:
             for release in releases:
+                if not self.cfg.lidarr.allow_multi_disc and is_multi_disc(release):
+                    continue
                 if release.get("monitored"):
                     logger.info(f"Using selected Lidarr release for {self.artist}: {release['format']}, {release['trackCount']} tracks, ID: {release['id']}")
                     return release
@@ -711,6 +716,8 @@ class WantedAlbum(Album):
         most_common_trackcount = release_trackcount_mode(releases)
 
         for release in releases:
+            if not self.cfg.lidarr.allow_multi_disc and is_multi_disc(release):
+                continue
             country = release["country"][0] if release["country"] else None
             region_ok = self.cfg.lidarr.skip_region_check or country in self.cfg.lidarr.accepted_countries
             track_count_ok = not self.cfg.lidarr.use_most_common_tracknum or release["trackCount"] == most_common_trackcount
@@ -736,10 +743,11 @@ class WantedAlbum(Album):
     def release_format_accepted(self, release) -> bool:
         """Check a release's format against `accepted_formats`, unwrapping multi-disc prefixes (e.g. "2xCD" -> "CD")."""
         fmt = release["format"]
-        if re.match(r"^\d+x", fmt, re.IGNORECASE):
+        match = re.match(r"^\d+x", fmt, re.IGNORECASE)
+        if match:
             if not self.cfg.lidarr.allow_multi_disc:
                 return False
-            fmt = fmt.split("x", 1)[1]
+            fmt = fmt[match.end():]
         return fmt in self.cfg.lidarr.accepted_formats
 
 
