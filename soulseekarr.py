@@ -347,6 +347,9 @@ class WantedAlbum(Album):
 
         for result in responses:
             username = result["username"]
+            if username in self.cfg.slskd.ignored_users:
+                logger.debug(f"Skipping ignored user: {username}")
+                continue
             user_results = self.search_results.setdefault(username, {})
             logger.debug(f"Caching and truncating results for user: {username}")
 
@@ -613,7 +616,7 @@ class WantedAlbum(Album):
             matched_files.append(best_file)
             total_match += best_match
 
-        if matched_files and username not in self.cfg.slskd.ignored_users:
+        if matched_files:
             logger.info(f"Found match from user: {username} for {len(matched_files)} tracks! Track attributes: {filetype}")
             logger.info(f"Average sequence match ratio: {total_match / len(matched_files)}")
             logger.info("SUCCESSFUL MATCH")
