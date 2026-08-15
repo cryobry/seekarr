@@ -802,6 +802,15 @@ class WantedAlbums:
     def shuffle(self) -> None:
         random.shuffle(self.albums)
 
+    def deduplicate(self) -> Self:
+        """Keep one album per ID, preferring the stricter cutoff-unmet source."""
+        unique_albums: dict[int, WantedAlbum] = {}
+        for album in self.albums:
+            current = unique_albums.get(album.id)
+            if current is None or album.source == "cutoff_unmet":
+                unique_albums[album.id] = album
+        return type(self)(albums=list(unique_albums.values()))
+
     def filter_list(self) -> Self:
         """Apply each album's source-specific failed-import, grabbed, and title filters."""
         filtered_albums: list[WantedAlbum] = []
@@ -1940,6 +1949,7 @@ def main():
                     time.sleep(interval)
                     continue
 
+            wanted_albums = wanted_albums.deduplicate()
             if not wanted_albums:
                 logger.info("No wanted albums available.")
                 if interval <= 0:
