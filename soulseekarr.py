@@ -401,13 +401,21 @@ class WantedAlbum(Album):
                 continue
             logger.debug(f"Parsing result from user: {username}")
             file_dirs = results[username][allowed_filetype]
-            found, directory, file_dir = self.check_for_match(all_tracks, allowed_filetype, file_dirs, username)
+            found, directory, file_dir, required_files = self.check_for_match(all_tracks, allowed_filetype, file_dirs, username)
             if found:
                 directory = self.download_filter(allowed_filetype, directory)
+                files_to_download = list({file["filename"]: file for file in directory["files"]}.values())
+                files_to_download.extend(
+                    file for file in required_files
+                    if file["filename"] not in {download["filename"] for download in files_to_download}
+                )
+                directory["files"] = files_to_download
                 prefix_filenames_with_dir(directory, file_dir)
                 try:
                     downloads = slskd_do_enqueue(username=username, files=directory["files"], file_dir=file_dir)
-                    if downloads and len(downloads) >= len(directory["files"]):
+                    required_filenames = {file["filename"] for file in required_files}
+                    accepted_filenames = {file["filename"] for file in downloads or []}
+                    if downloads and required_filenames <= accepted_filenames:
                         return True, downloads
                     else:
                         self.cancel_and_delete(downloads)
@@ -445,10 +453,16 @@ class WantedAlbum(Album):
                 if allowed_filetype not in results[username]:
                     continue
                 file_dirs = results[username][allowed_filetype]
-                found, directory, file_dir = self.check_for_match(disk["tracks"], allowed_filetype, file_dirs, username)
+                found, directory, file_dir, required_files = self.check_for_match(disk["tracks"], allowed_filetype, file_dirs, username)
                 if found:
                     directory = self.download_filter(allowed_filetype, directory)
-                    disk["source"] = (username, directory, file_dir)
+                    files_to_download = list({file["filename"]: file for file in directory["files"]}.values())
+                    files_to_download.extend(
+                        file for file in required_files
+                        if file["filename"] not in {download["filename"] for download in files_to_download}
+                    )
+                    directory["files"] = files_to_download
+                    disk["source"] = (username, directory, file_dir, required_files)
                     count_found += 1
                     break
             else:
@@ -460,11 +474,13 @@ class WantedAlbum(Album):
             all_downloads = []
             enqueued = 0
             for disk in split_release:
-                username, directory, file_dir = disk["source"]
+                username, directory, file_dir, required_files = disk["source"]
                 prefix_filenames_with_dir(directory, file_dir)
                 try:
                     downloads = slskd_do_enqueue(username=username, files=directory["files"], file_dir=file_dir)
-                    if downloads and len(downloads) == len(directory["files"]):
+                    required_filenames = {file["filename"] for file in required_files}
+                    accepted_filenames = {file["filename"] for file in downloads or []}
+                    if downloads and required_filenames <= accepted_filenames:
                         for file in downloads:
                             file["disk_no"] = disk["disk_no"]
                             file["disk_count"] = disk["disk_count"]
@@ -497,9 +513,9 @@ class WantedAlbum(Album):
             return False, None
 
     def check_for_match(self, tracks, allowed_filetype, file_dirs, username):
-        """Fetch (and cache) a user's file listing for each candidate folder and check for an album match."""
+        """Fetch (and cache) a user's file listing and return required matches plus the directory."""
         if username in broken_user:
-            return False, {}, ""
+            return False, {}, "", []
         for file_dir in file_dirs:
             if username not in folder_cache:
                 logger.debug(f"Add user to cache: {username}")
@@ -523,16 +539,16 @@ class WantedAlbum(Album):
 
                     broken_user.append(username)
                     logger.debug(f"Updated broken users {broken_user}")
-                    return False, {}, ""
+                    return False, {}, "", []
                 except IndexError:
                     logger.warning(f'Empty directory response from user "{username}" for folder "{file_dir}"')
                     directory = {"files": []}
                 except RequestException:
                     logger.exception(f'Network error getting directory from user: "{username}"')
-                    return False, {}, ""
+                    return False, {}, "", []
                 except Exception:
                     logger.exception(f'Error getting directory from user: "{username}"')
-                    return False, {}, ""
+                    return False, {}, "", []
                 folder_cache[username][file_dir] = copy.deepcopy(directory)
             else:
                 logger.debug(f"User: {username} Folder: {file_dir} in cache. Using cached value")
@@ -549,9 +565,8 @@ class WantedAlbum(Album):
 
             matched_files = self.album_match(tracks, matching_audio_files, username, allowed_filetype)
             if matched_files:
-                directory["files"] = matched_files
-                return True, directory, file_dir
-        return False, {}, ""
+                return True, directory, file_dir, matched_files
+        return False, {}, "", []
 
     def download_filter(self, allowed_filetype, directory):
         """Filter a slskd directory listing down to the allowed filetype (and whitelist, if enabled).
