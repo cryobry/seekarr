@@ -250,10 +250,8 @@ class WantedAlbum(Album):
 
     Lidarr's raw wanted-list response nests far more per album (images, ratings, full release
     media/tracks, statistics, etc.); trimming to this shape keeps memory use sane for large
-    libraries. See prune_wanted_record(). `releases` entries are only ever read for their
-    `albumId`, so they're kept as plain dicts rather than their own dataclass.
+    libraries. See prune_wanted_record().
     """
-    releases: list[dict[str, int]]  # [{"albumId": int}, ...]
     grab_failed: bool = False
     # Populated by search_for_album(), keyed by username -> filetype -> [file_dir, ...].
     search_results: dict = field(default_factory=dict, init=False, repr=False)
@@ -1619,7 +1617,6 @@ def prune_wanted_record(raw: dict, source: AlbumSource) -> WantedAlbum:
         releaseDate=raw["releaseDate"],
         year=raw["releaseDate"][0:4],
         source=source,
-        releases=[{"albumId": release["albumId"]} for release in raw.get("releases", [])],
     )
 
 
