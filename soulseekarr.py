@@ -794,6 +794,54 @@ class WantedAlbums:
 
         return type(self)(albums=filtered)
 
+    @classmethod
+    def get_wanted(cls, cfg: AppConfig) -> Self:
+        """Return the next batch of eligible wanted albums for this source."""
+        remaining_albums = remaining_albums_by_source.get(cfg.source, cls())
+
+        if not remaining_albums:
+            wanted_kwargs = {
+                "missing": cfg.source == "missing",
+                "page_size": 250,
+                "sort_key": "id" if cfg.lidarr.search_type == "shuffle" else cfg.lidarr.sort_key,
+                "sort_dir": "ascending" if cfg.lidarr.search_type == "shuffle" else cfg.lidarr.sort_dir,
+            }
+            try:
+                wanted_page = lidarr.get_wanted(page=1, **wanted_kwargs)
+            except PyarrError as ex:
+                logger.error(f"Failed to get wanted records: {ex}")
+                return cls()
+
+            raw_albums = list(wanted_page["records"])
+            total_albums = wanted_page["totalRecords"]
+            page = 2
+            while len(raw_albums) < total_albums:
+                try:
+                    wanted_page = lidarr.get_wanted(page=page, **wanted_kwargs)
+                except PyarrError as ex:
+                    logger.error(f"Failed to get wanted page {page}: {ex}")
+                    break
+
+                page_records = wanted_page["records"]
+                if not page_records:
+                    logger.warning("Lidarr returned an empty page before totalRecords was reached")
+                    break
+
+                raw_albums.extend(page_records)
+                page += 1
+
+            remaining_albums = cls(
+                albums=[WantedAlbum.prune_wanted_record(raw, cfg.source) for raw in raw_albums]
+            )
+
+            if cfg.lidarr.search_type == "shuffle" and not cfg.lidarr.shuffle_all:
+                remaining_albums.shuffle()
+
+        remaining_albums = remaining_albums.filter_queued().filter_eligible()
+        albums_to_process = remaining_albums.take(max(1, cfg.lidarr.chunk_size))
+        remaining_albums_by_source[cfg.source] = remaining_albums
+        return albums_to_process
+
     def grab_most_wanted(self) -> int:
         """Search, download, and import every album in this collection."""
         downloads = self.search_and_queue()
@@ -1516,55 +1564,6 @@ def setup_logging(config: dict, var_dir: str) -> None:
         logger.info(f"Logging to file: {log_file_path}")
 
 
-def get_wanted_albums(cfg: AppConfig) -> WantedAlbums:
-    """Return the next batch of eligible wanted albums for this source."""
-
-    remaining_albums = remaining_albums_by_source.get(cfg.source, WantedAlbums())
-
-    if not remaining_albums:
-        wanted_kwargs = {
-            "missing": cfg.source == "missing",
-            "page_size": 250,
-            "sort_key": "id" if cfg.lidarr.search_type == "shuffle" else cfg.lidarr.sort_key,
-            "sort_dir": "ascending" if cfg.lidarr.search_type == "shuffle" else cfg.lidarr.sort_dir,
-        }
-        try:
-            wanted_page = lidarr.get_wanted(page=1, **wanted_kwargs)
-        except PyarrError as ex:
-            logger.error(f"Failed to get wanted records: {ex}")
-            return WantedAlbums()
-
-        raw_albums = list(wanted_page["records"])
-        total_albums = wanted_page["totalRecords"]
-        page = 2
-        while len(raw_albums) < total_albums:
-            try:
-                wanted_page = lidarr.get_wanted(page=page, **wanted_kwargs)
-            except PyarrError as ex:
-                logger.error(f"Failed to get wanted page {page}: {ex}")
-                break
-
-            page_records = wanted_page["records"]
-            if not page_records:
-                logger.warning("Lidarr returned an empty page before totalRecords was reached")
-                break
-
-            raw_albums.extend(page_records)
-            page += 1
-
-        remaining_albums = WantedAlbums(
-            albums=[WantedAlbum.prune_wanted_record(raw, cfg.source) for raw in raw_albums]
-        )
-
-        if cfg.lidarr.search_type == "shuffle" and not cfg.lidarr.shuffle_all:
-            remaining_albums.shuffle()
-
-    remaining_albums = remaining_albums.filter_queued().filter_eligible()
-    albums_to_process = remaining_albums.take(max(1, cfg.lidarr.chunk_size))
-    remaining_albums_by_source[cfg.source] = remaining_albums
-    return albums_to_process
-
-
 def main():
     """Parse CLI arguments, resolve configuration, then run Soulseekarr once or on a loop."""
     global lidarr, slskd, source_configs, album_states, remaining_albums_by_source
@@ -1605,7 +1604,7 @@ def main():
             wanted_albums = WantedAlbums()
             for source, config in source_configs.items():
                 logger.info(f"Getting wanted albums from '{source}' list")
-                albums_to_append = get_wanted_albums(config)
+                albums_to_append = WantedAlbums.get_wanted(config)
                 if albums_to_append:
                     logger.info(f"Fetched {len(albums_to_append)} albums from '{source}' list that aren't on the deny list and/or blacklisted.")
                     wanted_albums.extend(albums_to_append)
