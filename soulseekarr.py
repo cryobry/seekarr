@@ -344,7 +344,7 @@ class WantedAlbum(Album):
         for result in responses:
             username = result["username"]
             user_results = self.search_results.setdefault(username, {})
-            logger.info(f"Caching and truncating results for user: {username}")
+            logger.debug(f"Caching and truncating results for user: {username}")
 
             for file in result["files"]:
                 file_dir = file["filename"].rsplit("\\", 1)[0]
@@ -804,7 +804,7 @@ class GrabbedAlbum:
 
     wanted_album: WantedAlbum
     files: list[dict]
-    count_start: float = field(default_factory=time.time)
+    count_start: float = field(default_factory=time.monotonic)
     rejected_retries: int = 0
     import_folder: str | None = None
     staging_folder: str | None = None
@@ -991,18 +991,6 @@ class GrabbedAlbum:
                     ok = False
         return ok
 
-    def download_progress(self) -> tuple[bool, list[dict], int]:
-        """Return completion, problem files, and remote-queued count."""
-        files = self.required_files
-        states = [self.file_state(file) for file in files]
-        problems = [file for file in files if self.file_state(file) in self.ERRORS]
-
-        return (
-            all(state == self.SUCCESS for state in states),
-            problems,
-            states.count(self.REMOTE),
-        )
-
     def discard_incomplete_optional_files(self) -> None:
         """Cancel optional transfers that did not complete before required files finished."""
         optional_files = [
@@ -1099,16 +1087,18 @@ class GrabbedAlbum:
 
     def poll(self) -> bool:
         """Poll this album once, returning True when it is terminal."""
-        elapsed = time.time() - self.count_start
+        elapsed = time.monotonic() - self.count_start
 
         if not self.refresh_download_status():
             if elapsed >= self.cfg.slskd.stalled_timeout:
                 return self.fail("Timeout waiting for download status")
             return False
 
-        done, problems, remote_count = self.download_progress()
+        required_files = self.required_files
+        states = [self.file_state(file) for file in required_files]
+        problems = [file for file in required_files if self.file_state(file) in self.ERRORS]
 
-        if done:
+        if all(state == self.SUCCESS for state in states):
             logger.info(f"Completed download of {self.artist} - {self.title}")
             self.discard_incomplete_optional_files()
             self.process_completed_album()
@@ -1117,7 +1107,10 @@ class GrabbedAlbum:
         if elapsed >= self.cfg.slskd.stalled_timeout:
             return self.fail("Timeout waiting for download")
 
-        if (remote_count == len(self.required_files) and elapsed >= self.cfg.slskd.remote_queue_timeout):
+        if (
+            states.count(self.REMOTE) == len(required_files)
+            and elapsed >= self.cfg.slskd.remote_queue_timeout
+        ):
             return self.fail("Remote queue timeout")
 
         return self.handle_problems(problems)
@@ -1126,8 +1119,7 @@ class GrabbedAlbum:
         """Move a failed Lidarr import's folder into `cfg.slskd.failed_imports_dir`, avoiding name clashes."""
         failed_imports_dir = self.cfg.slskd.failed_imports_dir
 
-        if not os.path.exists(failed_imports_dir):
-            os.makedirs(failed_imports_dir)
+        os.makedirs(failed_imports_dir, exist_ok=True)
 
         folder_name = os.path.basename(os.path.normpath(src_path))
         folder_path = safe_path(self.cfg.slskd.download_dir, folder_name)
@@ -1308,21 +1300,20 @@ def slskd_do_enqueue(username, files, file_dir):
         return None
     if not enqueue:
         return None
+    if isinstance(enqueue, dict):
+        enqueue = enqueue.get("files", [enqueue])
+    if not isinstance(enqueue, list):
+        enqueue = []
 
-    enqueue_records = (
-        enqueue
-        if isinstance(enqueue, list)
-        else enqueue.get("files", [enqueue])
-        if isinstance(enqueue, dict)
-        else []
-    )
     accepted_ids = {
         record["filename"]: record["id"]
-        for record in enqueue_records
+        for record in enqueue
         if isinstance(record, dict) and "filename" in record and "id" in record
     }
-    deadline = time.time() + TRANSFER_APPEAR_TIMEOUT
-    while not all(file["filename"] in accepted_ids for file in files) and time.time() < deadline:
+    required_names = {file["filename"] for file in files if file.get("required", True)}
+    deadline = time.monotonic() + TRANSFER_APPEAR_TIMEOUT
+
+    while not required_names.issubset(accepted_ids) and time.monotonic() < deadline:
         try:
             download_list = slskd.transfers.get_downloads(username=username)
             directory = next((d for d in download_list["directories"] if d["directory"] == file_dir), None)
@@ -1334,7 +1325,8 @@ def slskd_do_enqueue(username, files, file_dir):
                 })
         except Exception:
             logger.warning(f"Failed to get download status for {username} after enqueue", exc_info=True)
-        time.sleep(1)
+        if not required_names.issubset(accepted_ids):
+            time.sleep(1)
 
     return [
         {
@@ -1487,47 +1479,42 @@ def get_wanted_albums(cfg: AppConfig) -> WantedAlbums:
 
 
 def filter_queued_albums(albums: WantedAlbums) -> WantedAlbums:
-    """Drop any wanted record whose album is already in Lidarr's download queue."""
+    """Drop wanted albums that are already in Lidarr's download queue."""
     if not albums:
         return albums
 
+    current_queue = []
+    total_queued = 1
+    page = 1
     try:
-        queued_albums = lidarr.get_queue(sort_dir="ascending", sort_key="albums.title")
-        total_queued = queued_albums["totalRecords"]
-        current_queue = queued_albums["records"]
-
-        if queued_albums["pageSize"] < total_queued:
-            page = 2
-            while len(current_queue) < total_queued:
-                try:
-                    next_page = lidarr.get_queue(page=page, sort_key="albums.title", sort_dir="ascending")
-                except PyarrError as ex:
-                    logger.error(f"Failed to get queue details: {ex}")
-                    break
-                page_records = next_page["records"]
-                if not page_records:
-                    logger.warning("Lidarr returned an empty page before totalRecords was reached")
-                    break
-                current_queue.extend(page_records)
-                page += 1
-
-        queued_album_ids = set()
-        for album in current_queue:
-            if "albumId" in album:
-                queued_album_ids.add(album["albumId"])
-            else:
-                logger.warning(f"Dropping entry due to missing key in keylist: [{album.keys()}]")
-
-        not_queued = WantedAlbums()
-        for album in albums:
-            if album.id in queued_album_ids:
-                logger.info(f"Skipping album '{album.title}' because it's already in download queue")
-                continue
-            not_queued.append(album)
-        return not_queued
+        while len(current_queue) < total_queued:
+            queue_page = lidarr.get_queue(page=page, sort_key="albums.title", sort_dir="ascending")
+            page_records = queue_page["records"]
+            total_queued = queue_page["totalRecords"]
+            if not page_records:
+                if len(current_queue) < total_queued:
+                    logger.warning("Lidarr returned an empty queue page before totalRecords was reached")
+                break
+            current_queue.extend(page_records)
+            page += 1
     except PyarrError as ex:
-        logger.error(f"Failed to get queue details so not filtering based on queue: {ex}")
+        logger.error(f"Failed to get queue details, so the queue was not filtered: {ex}")
         return albums
+
+    queued_album_ids = set()
+    for record in current_queue:
+        if "albumId" in record:
+            queued_album_ids.add(record["albumId"])
+        else:
+            logger.warning(f"Ignoring queue entry without albumId: {record.keys()}")
+
+    not_queued = WantedAlbums()
+    for album in albums:
+        if album.id in queued_album_ids:
+            logger.info(f"Skipping album '{album.title}' because it's already in download queue")
+        else:
+            not_queued.append(album)
+    return not_queued
 
 
 def main():
