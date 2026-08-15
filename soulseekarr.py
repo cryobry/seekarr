@@ -64,12 +64,10 @@ AlbumSource = Literal["missing", "cutoff_unmet"]
 
 @dataclass
 class AlbumState:
-    """Persistent outcome shared by instances representing the same album."""
-    outcome: Literal[
-        "completed",
-        "import_failed",
-        "import_pending",
-    ] | None = None
+    """State shared by every instance representing the same Lidarr album."""
+    grabbed: bool = False
+    import_failed: bool = False
+    import_pending: bool = False
 
 
 @dataclass
@@ -255,12 +253,12 @@ class WantedAlbum(Album):
 
     def skip_reason(self) -> str | None:
         """Return why this album should be skipped, or None if it is eligible."""
-        if self.cfg.lidarr.failed_import_denylist and self.state.outcome == "import_failed":
+        if self.cfg.lidarr.failed_import_denylist and self.state.import_failed:
             return "failed import"
-        if self.state.outcome == "import_pending":
+        if self.state.import_pending:
             return "pending Lidarr import"
-        if self.state.outcome == "completed":
-            return "already completed"
+        if self.cfg.lidarr.disable_sync and self.state.grabbed:
+            return "already grabbed"
 
         for word in self.cfg.lidarr.title_blacklist:
             if word and word.lower() in self.title.lower():
@@ -642,10 +640,13 @@ class WantedAlbum(Album):
 
     def add_to_failed_import_denylist(self) -> None:
         """Remember this failed import for the lifetime of the process."""
-        if self.state.outcome == "import_failed":
+        if self.state.import_failed:
             return
-        self.state.outcome = "import_failed"
-        logger.info(f"Added to failed import denylist: {self.artist} - {self.title} (ID: {self.id})")
+        self.state.import_failed = True
+        logger.info(
+            f"Added to failed import denylist: "
+            f"{self.artist} - {self.title} (ID: {self.id})"
+        )
 
     def choose_release(self, releases):
         """Return the first selected or eligible Lidarr release."""
@@ -956,7 +957,7 @@ class GrabbedAlbum:
 
         if self.cfg.lidarr.disable_sync:
             logger.info(f"Sync disabled. Skipping Lidarr import of {self.artist} - {self.title}")
-            self.wanted_album.state.outcome = "completed"
+            self.wanted_album.state.grabbed = True
             return
 
         logger.info(f"Attempting Lidarr import of {self.artist} - {self.title}")
@@ -1032,12 +1033,12 @@ class GrabbedAlbum:
                 return False, rm_dirs
         return True, rm_dirs
 
-    def refresh_download_status(self) -> bool:
-        """Fetch and attach the current slskd transfer status to each file in `files`."""
+    def refresh_download_status(self, statuses: dict[tuple[str, int], dict]) -> bool:
+        """Attach the current slskd transfer status from a shared snapshot."""
         ok = True
         for file in self.files:
             try:
-                status = slskd.transfers.get_download(file["username"], file["id"])
+                status = statuses.get((file["username"], file["id"]))
                 if not isinstance(status, dict) or not isinstance(status.get("state"), str) or not status["state"]:
                     raise ValueError("missing or malformed download status")
                 file["status"] = status
@@ -1142,11 +1143,11 @@ class GrabbedAlbum:
 
         return False
 
-    def poll(self) -> bool:
-        """Poll this album once, returning True when it is terminal."""
+    def poll(self, statuses: dict[tuple[str, int], dict]) -> bool:
+        """Interpret one shared transfer snapshot, returning True when terminal."""
         elapsed = time.monotonic() - self.count_start
 
-        if not self.refresh_download_status():
+        if not self.refresh_download_status(statuses):
             if elapsed >= self.cfg.slskd.stalled_timeout:
                 return self.fail("Timeout waiting for download status")
             return False
@@ -1206,7 +1207,7 @@ class GrabbedAlbum:
         )
         logger.info(f"Starting Lidarr import for: {self.title} ID: {command['id']}")
 
-        deadline = time.time() + self.cfg.lidarr.import_timeout
+        deadline = time.monotonic() + self.cfg.lidarr.import_timeout
         while True:
             current_task = lidarr.get_command(command["id"])
 
@@ -1217,9 +1218,9 @@ class GrabbedAlbum:
 
             if current_task.get("status") in ("completed", "failed"):
                 break
-            if time.time() >= deadline:
+            if time.monotonic() >= deadline:
                 logger.error(f"Timed out waiting for Lidarr import of {self.artist} - {self.title}")
-                self.wanted_album.state.outcome = "import_pending"
+                self.wanted_album.state.import_pending = True
                 return
             time.sleep(2)
 
@@ -1227,7 +1228,7 @@ class GrabbedAlbum:
         logger.info(f"{current_task.get('commandName', 'Lidarr command')} {current_task.get('message', '')} from: {path}")
         failed = (current_task.get("status") == "failed" or current_task.get("result") == "unsuccessful")
         if not failed:
-            self.wanted_album.state.outcome = "completed"
+            self.wanted_album.state.import_failed = False
             return
 
         self.wanted_album.failure = "Lidarr import failed"
@@ -1254,14 +1255,36 @@ class GrabbedAlbums:
     def append(self, album: GrabbedAlbum) -> None:
         self.albums.append(album)
 
+    def refresh_download_status(self) -> dict[tuple[str, int], dict]:
+        """Fetch each active user's downloads and index them by username and ID."""
+        statuses = {}
+        usernames = {
+            file["username"]
+            for album in self.albums
+            for file in album.files
+        }
+
+        for username in usernames:
+            try:
+                downloads = slskd.transfers.get_downloads(username=username)
+                for directory in downloads["directories"]:
+                    for file in directory["files"]:
+                        if "id" in file:
+                            statuses[(username, file["id"])] = file
+            except Exception:
+                logger.exception(f"Error getting downloads for {username}")
+
+        return statuses
+
     def monitor_downloads(self) -> None:
         """Poll active albums until every album reaches a terminal state."""
         while self.albums:
+            statuses = self.refresh_download_status()
             for album in self.albums.copy():
-                if album.poll():
+                if album.poll(statuses):
                     self.albums.remove(album)
-
-            if self.albums:
+                    break
+            else:
                 time.sleep(5)
 
 
