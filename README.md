@@ -6,7 +6,7 @@
 
 Soulseekarr reads Lidarr's _**Wanted**_ and/or _**Cutoff Unmet**_ album lists and downloads them with Slskd using [pyarr](https://github.com/totaldebug/pyarr) and [slskd-api](https://github.com/bigoulours/slskd-python-api). As downloads complete in Slskd, Soulseekarr informs Lidarr to import the files.
 
-Alternatively, Soulseekarr can operate in various standalone modes using options described in [`config.yml`](config.yml).
+Alternatively, Soulseekarr can operate in various standalone modes using the options described in [`config.yml`](config.yml).
 
 ## Prerequisites
 

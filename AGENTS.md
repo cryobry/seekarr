@@ -13,7 +13,8 @@ in this one module. Do not split it into a package unless the user explicitly as
   `__post_init__`, at construction time.
 - Every `lidarr.*`/`slskd.*` config value can also be overridden by an env var named
   `<SECTION>_<KEY>` (e.g. `LIDARR_API_KEY`, `SLSKD_MINIMUM_FILENAME_MATCH_RATIO`), applied in
-  `env_override()` before the dataclass is built. Env vars win over `config.yml`, including
+  `env_override()` before the dataclass is built. Some keys, including the slskd and lidarr API settings
+  are only processed in the global context (not per-source list). Env vars win over `config.yml`, including
   per-source overrides — keep this precedence when adding new config fields. List overrides are
   comma-separated, trimmed, and empty entries are removed; invalid booleans, numbers, and
   `LIDARR_SOURCES` values raise configuration errors. The loop interval uses `LOOP_INTERVAL`
