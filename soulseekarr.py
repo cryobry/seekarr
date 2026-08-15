@@ -713,16 +713,25 @@ class WantedAlbum(Album):
                     logger.info(f"Using selected Lidarr release for {self.artist}: {release['format']}, {release['trackCount']} tracks, ID: {release['id']}")
                     return release
 
-        most_common_trackcount = release_trackcount_mode(releases)
+        def is_eligible(release) -> bool:
+            country = release["country"][0] if release["country"] else None
+            return (
+                (self.cfg.lidarr.allow_multi_disc or not is_multi_disc(release))
+                and
+                (self.cfg.lidarr.skip_region_check or country in self.cfg.lidarr.accepted_countries)
+                and self.release_format_accepted(release)
+                and release["status"] == "Official"
+            )
+
+        most_common_trackcount = release_trackcount_mode([release for release in releases if is_eligible(release)])
 
         for release in releases:
             if not self.cfg.lidarr.allow_multi_disc and is_multi_disc(release):
                 continue
             country = release["country"][0] if release["country"] else None
-            region_ok = self.cfg.lidarr.skip_region_check or country in self.cfg.lidarr.accepted_countries
             track_count_ok = not self.cfg.lidarr.use_most_common_tracknum or release["trackCount"] == most_common_trackcount
 
-            if region_ok and self.release_format_accepted(release) and release["status"] == "Official" and track_count_ok:
+            if is_eligible(release) and track_count_ok:
                 logger.info(
                     ", ".join(
                         [
