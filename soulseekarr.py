@@ -808,7 +808,11 @@ class WantedAlbums:
 
                 if not page_records:
                     if len(current_queue) < total_queued:
-                        logger.warning("Lidarr returned an empty queue page before totalRecords was reached")
+                        logger.warning(
+                            "Lidarr returned an empty queue page before "
+                            "totalRecords was reached, so the queue was not filtered"
+                        )
+                        return self
                     break
 
                 current_queue.extend(page_records)
@@ -817,15 +821,21 @@ class WantedAlbums:
             logger.error(f"Failed to get queue details, so the queue was not filtered: {ex}")
             return self
 
-        queued_ids = {
-            record["albumId"]
-            for record in current_queue
-            if "albumId" in record
-        }
+        queued_ids = set()
 
         for record in current_queue:
-            if "albumId" not in record:
+            record_ids = {
+                release["albumId"]
+                for release in record.get("releases", [])
+                if "albumId" in release
+            }
+            if "albumId" in record:
+                record_ids.add(record["albumId"])
+
+            if not record_ids:
                 logger.warning(f"Ignoring queue entry without albumId: {record.keys()}")
+
+            queued_ids.update(record_ids)
 
         not_queued = []
         for album in self.albums:
