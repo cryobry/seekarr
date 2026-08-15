@@ -48,9 +48,8 @@ additional modules unless the user explicitly asks for it.
   argument. `album_match()` assigns Soulseek files one-to-one and returns only the matched files
   for enqueueing. Accepted release countries and formats are hard requirements; monitored releases
   may explicitly override them, while `allow_multi_disc=False` must block multi-disc enqueueing.
-  `_cancel_and_delete_files(cfg, files)` is the one shared private helper (both classes'
-  `cancel_and_delete` delegate to it, since `WantedAlbum` cancels an ad-hoc file list while
-  `GrabbedAlbum` always cancels `self.files`).
+  `WantedAlbum.cancel_and_delete(files)` owns cancellation and cleanup for both pre-grab and
+  post-grab paths; `GrabbedAlbum` delegates to its `wanted_album`.
 - `safe_path()` is the shared validator for remote path components. It rejects unsafe components,
   resolves paths under the configured download root, and is used for moves and cleanup. Staging
   directories are created exclusively and destination collisions are rejected before moving.

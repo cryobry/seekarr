@@ -678,8 +678,47 @@ class WantedAlbum(Album):
         return ratio
 
     def cancel_and_delete(self, files) -> None:
-        """Cancel each in-progress slskd download in `files` and remove its local download folder."""
-        _cancel_and_delete_files(self.cfg, files)
+        """Cancel downloads and remove their local files."""
+        for file in files:
+            try:
+                slskd.transfers.cancel_download(
+                    username=file["username"],
+                    id=file["id"],
+                )
+            except Exception:
+                logger.warning(
+                    f"Failed to cancel download {file['filename']} "
+                    f"for {file['username']}",
+                    exc_info=True,
+                )
+
+            filename = file["filename"].split("\\")[-1]
+            folder = file["file_dir"].split("\\")[-1]
+            delete_dir = safe_path(self.cfg.slskd.download_dir, folder)
+            delete_file = safe_path(delete_dir, filename) if delete_dir else None
+
+            if (
+                delete_file
+                and os.path.isfile(delete_file)
+                and not os.path.islink(delete_file)
+            ):
+                try:
+                    os.remove(delete_file)
+                except OSError:
+                    logger.warning(
+                        f"Failed to remove download file {delete_file}",
+                        exc_info=True,
+                    )
+
+            if (
+                delete_dir
+                and os.path.isdir(delete_dir)
+                and not os.path.islink(delete_dir)
+            ):
+                try:
+                    os.rmdir(delete_dir)
+                except OSError:
+                    pass
 
     def add_to_failed_import_denylist(self) -> None:
         """Remember this failed import for the lifetime of the process."""
@@ -1155,12 +1194,12 @@ class GrabbedAlbum:
             and (file.get("status") or {}).get("state") != "Completed, Succeeded"
         ]
         if optional_files:
-            _cancel_and_delete_files(self.cfg, optional_files)
+            self.wanted_album.cancel_and_delete(optional_files)
             self.files = [file for file in self.files if file not in optional_files]
 
     def cancel_and_delete(self) -> None:
-        """Cancel each in-progress slskd download for this album and remove its local download folder."""
-        _cancel_and_delete_files(self.cfg, self.files)
+        """Cancel this album's downloads and remove their local files."""
+        self.wanted_album.cancel_and_delete(self.files)
 
     def fail(self, reason: str) -> bool:
         """Cancel this album, record its failure, and mark it terminal."""
@@ -1393,29 +1432,6 @@ def safe_path(download_root: str, *parts: str) -> str | None:
         return candidate_path if os.path.commonpath((root_path, candidate_path)) == root_path else None
     except ValueError:
         return None
-
-
-def _cancel_and_delete_files(cfg: AppConfig, files: list[dict]) -> None:
-    """Cancel each file's in-progress slskd download and remove its local file."""
-
-    for file in files:
-        try:
-            slskd.transfers.cancel_download(username=file["username"], id=file["id"])
-        except Exception:
-            logger.warning(f"Failed to cancel download {file['filename']} for {file['username']}", exc_info=True)
-        filename = file["filename"].split("\\")[-1]
-        delete_dir = safe_path(cfg.slskd.download_dir, file["file_dir"].split("\\")[-1])
-        delete_file = safe_path(delete_dir, filename) if delete_dir else None
-        if delete_file and os.path.isfile(delete_file) and not os.path.islink(delete_file):
-            try:
-                os.remove(delete_file)
-            except OSError:
-                logger.warning(f"Failed to remove download file {delete_file}", exc_info=True)
-        if delete_dir and os.path.isdir(delete_dir) and not os.path.islink(delete_dir):
-            try:
-                os.rmdir(delete_dir)
-            except OSError:
-                pass
 
 
 def verify_filetype(file, allowed_filetype):
