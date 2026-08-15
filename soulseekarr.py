@@ -80,6 +80,7 @@ class LidarrConfig:
     disable_sync: bool
     sources: list[AlbumSource]
     search_type: str
+    shuffle_all: bool
     chunk_size: int
     sort_key: str
     sort_dir: str
@@ -153,7 +154,6 @@ class AppConfig:
         ).lower().strip()
         if search_type not in ("incrementing", "shuffle"):
             raise ValueError(f"[lidarr.search_type] - {search_type = } is not valid")
-
         lidarr = LidarrConfig(
             api_key=env_override("lidarr", "api_key", resolved_lidarr.get("api_key")),
             host_url=env_override("lidarr", "host_url", resolved_lidarr.get("host_url")),
@@ -163,6 +163,7 @@ class AppConfig:
             disable_sync=bool(env_override("lidarr", "disable_sync", resolved_lidarr.get("disable_sync", False))),
             sources=sources,
             search_type=search_type,
+            shuffle_all=bool(env_override("lidarr", "shuffle_all", lidarr_cfg.get("shuffle_all", False))),
             chunk_size=int(env_override("lidarr", "chunk_size", resolved_lidarr.get("chunk_size", 10))),
             sort_key=str(env_override("lidarr", "sort_key", resolved_lidarr.get("sort_key", "albums.title"))).strip(),
             sort_dir=str(env_override("lidarr", "sort_dir", resolved_lidarr.get("sort_dir", "ascending"))).strip().lower(),
@@ -422,7 +423,7 @@ class WantedAlbum(Album):
             logger.debug(f"Parsing result from user: {username}")
             match = self.check_for_match(tracks, filetype, file_dirs, username)
             if match:
-                downloads = self._enqueue_match(username, filetype, *match)
+                downloads = self._enqueue_match(username, *match)
                 if downloads:
                     return downloads
 
@@ -463,7 +464,7 @@ class WantedAlbum(Album):
         all_downloads = []
         for disk_no, username, directory, file_dir, required_files in sources:
             downloads = self._enqueue_match(
-                username, filetype, directory, file_dir, required_files
+                username, directory, file_dir, required_files
             )
             if not downloads:
                 if all_downloads:
@@ -480,13 +481,11 @@ class WantedAlbum(Album):
     def _enqueue_match(
         self,
         username,
-        filetype,
         directory,
         file_dir,
         required_files,
     ):
-        """Prepare and enqueue one matched directory."""
-        directory = self.download_filter(filetype, directory)
+        """Enqueue an already validated album directory."""
         files = {file["filename"]: file for file in directory["files"]}
         files.update({file["filename"]: file for file in required_files})
         required_names = {file["filename"] for file in required_files}
@@ -519,8 +518,11 @@ class WantedAlbum(Album):
         return None
 
     def check_for_match(self, tracks, filetype, file_dirs, username):
-        """Return the first directory containing every required track."""
+        """Return the first reasonably sized directory containing every required track."""
         user_cache = self.folder_cache.setdefault(username, {})
+        track_count = len(tracks)
+        maximum_audio_files = max(track_count * 2, track_count + 10)
+        maximum_files = maximum_audio_files + 25
 
         for file_dir in file_dirs:
             if file_dir in user_cache:
@@ -551,8 +553,25 @@ class WantedAlbum(Album):
                 if verify_filetype(file, filetype)
             ]
 
-            # Additional bonus tracks are allowed.
-            if len(audio_files) < len(tracks):
+            if len(audio_files) < track_count:
+                continue
+
+            if len(audio_files) > maximum_audio_files:
+                logger.debug(
+                    f'Skipping oversized directory "{username}\\{file_dir}": '
+                    f"{len(audio_files)} {filetype} files for "
+                    f"{track_count} expected tracks"
+                )
+                continue
+
+            directory = self.download_filter(filetype, directory)
+            if len(directory["files"]) > maximum_files:
+                logger.warning(
+                    f'Rejecting oversized match for {self.artist} - {self.title} '
+                    f'from "{username}\\{file_dir}": '
+                    f'{len(directory["files"])} filtered files for '
+                    f"{track_count} expected tracks"
+                )
                 continue
 
             matched = self.album_match(tracks, audio_files, username, filetype)
@@ -1537,7 +1556,7 @@ def get_wanted_albums(cfg: AppConfig) -> WantedAlbums:
             albums=[prune_wanted_record(raw, cfg.source) for raw in raw_albums]
         )
 
-        if cfg.lidarr.search_type == "shuffle":
+        if cfg.lidarr.search_type == "shuffle" and not cfg.lidarr.shuffle_all:
             remaining_albums.shuffle()
 
     remaining_albums = remaining_albums.filter_queued().filter_eligible()
@@ -1594,6 +1613,8 @@ def main():
                     logger.info(f"No albums fetched from '{source}' list that aren't on the deny list and/or blacklisted.")
 
             wanted_albums = wanted_albums.deduplicate()
+            if cfg.lidarr.shuffle_all:
+                wanted_albums.shuffle()
             if not wanted_albums:
                 logger.info("No wanted albums available.")
                 if interval <= 0:
