@@ -24,6 +24,8 @@ from pyarr.exceptions import PyarrError
 
 logger = logging.getLogger("soulseekarr")
 
+TRANSFER_APPEAR_TIMEOUT = 30
+
 def expand_env_vars(value):
     """Recursively expand $VAR/${VAR} references in strings loaded from the YAML config."""
     if isinstance(value, str):
@@ -1447,6 +1449,15 @@ def slskd_do_enqueue(username, files, file_dir):
     size) needed to poll its download status later.
     """
     try:
+        before = slskd.transfers.get_downloads(username=username)
+    except Exception:
+        logger.warning(f"Failed to snapshot existing downloads for {username} before enqueue", exc_info=True)
+        return None
+
+    before_directory = next((d for d in before["directories"] if d["directory"] == file_dir), {"files": []})
+    existing_ids = {file["id"] for file in before_directory["files"] if "id" in file}
+
+    try:
         enqueue = slskd.transfers.enqueue(username=username, files=files)
     except Exception:
         logger.debug("Enqueue failed", exc_info=True)
@@ -1454,32 +1465,44 @@ def slskd_do_enqueue(username, files, file_dir):
     if not enqueue:
         return None
 
-    time.sleep(5)
-    try:
-        download_list = slskd.transfers.get_downloads(username=username)
-    except Exception:
-        logger.warning(f"Failed to get download status for {username} after enqueue", exc_info=True)
-        return None
+    enqueue_records = (
+        enqueue
+        if isinstance(enqueue, list)
+        else enqueue.get("files", [enqueue])
+        if isinstance(enqueue, dict)
+        else []
+    )
+    accepted_ids = {
+        record["filename"]: record["id"]
+        for record in enqueue_records
+        if isinstance(record, dict) and "filename" in record and "id" in record
+    }
+    deadline = time.time() + TRANSFER_APPEAR_TIMEOUT
+    while not all(file["filename"] in accepted_ids for file in files) and time.time() < deadline:
+        try:
+            download_list = slskd.transfers.get_downloads(username=username)
+            directory = next((d for d in download_list["directories"] if d["directory"] == file_dir), None)
+            if directory is not None:
+                accepted_ids.update({
+                    file["filename"]: file["id"]
+                    for file in directory["files"]
+                    if "id" in file and file["id"] not in existing_ids
+                })
+        except Exception:
+            logger.warning(f"Failed to get download status for {username} after enqueue", exc_info=True)
+        time.sleep(1)
 
-    directory = next((d for d in download_list["directories"] if d["directory"] == file_dir), None)
-    if directory is None:
-        return []
-
-    accepted_ids = {f["filename"]: f["id"] for f in directory["files"]}
-    downloads = []
-    for file in files:
-        slskd_id = accepted_ids.get(file["filename"])
-        if slskd_id is not None:
-            downloads.append(
-                {
-                    "filename": file["filename"],
-                    "id": slskd_id,
-                    "file_dir": file_dir,
-                    "username": username,
-                    "size": file["size"],
-                }
-            )
-    return downloads
+    return [
+        {
+            "filename": file["filename"],
+            "id": accepted_ids[file["filename"]],
+            "file_dir": file_dir,
+            "username": username,
+            "size": file["size"],
+        }
+        for file in files
+        if file["filename"] in accepted_ids
+    ]
 
 
 def prefix_filenames_with_dir(directory, file_dir):
