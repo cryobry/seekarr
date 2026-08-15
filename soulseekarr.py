@@ -454,11 +454,18 @@ class WantedAlbum(Album):
             split_release.append(disk)
         total = len(split_release)
         count_found = 0
+        used_sources = set()
         for disk in split_release:
             for username in results:
                 if allowed_filetype not in results[username]:
                     continue
-                file_dirs = results[username][allowed_filetype]
+                file_dirs = [
+                    file_dir
+                    for file_dir in results[username][allowed_filetype]
+                    if (username, file_dir) not in used_sources
+                ]
+                if not file_dirs:
+                    continue
                 found, directory, file_dir, required_files = self.check_for_match(disk["tracks"], allowed_filetype, file_dirs, username)
                 if found:
                     directory = self.download_filter(allowed_filetype, directory)
@@ -472,6 +479,7 @@ class WantedAlbum(Album):
                     for file in directory["files"]:
                         file["required"] = file["filename"] in required_filenames
                     disk["source"] = (username, directory, file_dir, required_files)
+                    used_sources.add((username, file_dir))
                     count_found += 1
                     break
             else:
