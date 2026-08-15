@@ -2,7 +2,7 @@ FROM python:3.14
 
 WORKDIR /app
 
-COPY requirements.txt soulseekarr.py ./
+COPY requirements.txt migration.py soulseekarr.py ./
 COPY resources/ resources/
 
 RUN apt-get update \
