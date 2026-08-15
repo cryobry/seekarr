@@ -1629,8 +1629,10 @@ def get_wanted_albums(cfg: AppConfig) -> WantedAlbums:
     """
 
     remaining_albums = remaining_albums_by_source.get(cfg.source, WantedAlbums())
+    fetched_wanted_list = False
 
     if not remaining_albums:
+        fetched_wanted_list = True
         if cfg.lidarr.search_type not in ("incrementing", "random"):
             raise ValueError(f"[lidarr.search_type] - {cfg.lidarr.search_type = } is not valid")
 
@@ -1681,7 +1683,9 @@ def get_wanted_albums(cfg: AppConfig) -> WantedAlbums:
             remaining_albums.shuffle()
 
     batch_size = max(1, cfg.lidarr.chunk_size)
-    albums_to_process = filter_queued_albums(remaining_albums.take(batch_size))
+    albums_to_process = remaining_albums.take(batch_size)
+    if not fetched_wanted_list:
+        albums_to_process = filter_queued_albums(albums_to_process)
     remaining_albums_by_source[cfg.source] = remaining_albums
     return albums_to_process
 
