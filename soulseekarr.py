@@ -11,6 +11,7 @@ import time
 import shutil
 import difflib
 import logging
+import fcntl
 from datetime import datetime
 from urllib.parse import urljoin
 import copy
@@ -1658,8 +1659,27 @@ def migrate_soularr_ini_config(config_dir: str) -> bool:
 
 def remove_lock_file(path: str) -> None:
     """Docker doesn't use a lock file, so only remove it outside Docker."""
-    if not is_docker() and os.path.exists(path):
-        os.remove(path)
+    if not is_docker():
+        try:
+            os.remove(path)
+        except FileNotFoundError:
+            pass
+
+
+def acquire_lock_file(path: str):
+    """Acquire an OS lock that is released automatically if the process crashes."""
+    lock_file = open(path, "a+")
+    try:
+        fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        lock_file.close()
+        logger.info("Soulseekarr instance is already running.")
+        return None
+    lock_file.seek(0)
+    lock_file.truncate()
+    lock_file.write(str(os.getpid()))
+    lock_file.flush()
+    return lock_file
 
 
 def setup_logging(config: dict, var_dir: str) -> None:
@@ -1878,17 +1898,13 @@ def main():
     lock_file_path = os.path.join(args.var_dir, ".soulseekarr.lock")
     config_file_path = os.path.join(args.config_dir, "config.yml")
 
-    if not is_docker() and os.path.exists(lock_file_path) and args.lock_file:
-        logger.info("Soulseekarr instance is already running.")
-        return
-
-    lock_created = False
+    lock_file = None
 
     try:
         if not is_docker() and args.lock_file:
-            with open(lock_file_path, "w") as lock_file:
-                lock_file.write("locked")
-                lock_created = True
+            lock_file = acquire_lock_file(lock_file_path)
+            if lock_file is None:
+                return
 
         if not os.path.exists(config_file_path) and migrate_soularr_ini_config(args.config_dir):
             return
@@ -1984,7 +2000,8 @@ def main():
                 break
 
     finally:
-        if lock_created:
+        if lock_file is not None:
+            lock_file.close()
             remove_lock_file(lock_file_path)
 
 
