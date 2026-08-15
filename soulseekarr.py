@@ -255,11 +255,23 @@ class WantedAlbum(Album):
 
     Lidarr's raw wanted-list response nests far more per album (images, ratings, full release
     media/tracks, statistics, etc.); trimming to this shape keeps memory use sane for large
-    libraries. See prune_wanted_record().
+    libraries.
     """
     failure: str | None = field(default=None, init=False)
     search_results: dict = field(default_factory=dict, init=False, repr=False)
     folder_cache: dict = field(default_factory=dict, init=False, repr=False)
+
+    @classmethod
+    def prune_wanted_record(cls, raw: dict, source: AlbumSource) -> "WantedAlbum":
+        """Build a wanted album from the fields used by Soulseekarr."""
+        return cls(
+            id=raw["id"],
+            artistId=raw["artistId"],
+            artist=raw["artist"]["artistName"],
+            title=raw["title"],
+            year=raw["releaseDate"][0:4],
+            source=source,
+        )
 
     def skip_reason(self) -> str | None:
         """Return why this album should be skipped, or None if it is eligible."""
@@ -1504,18 +1516,6 @@ def setup_logging(config: dict, var_dir: str) -> None:
         logger.info(f"Logging to file: {log_file_path}")
 
 
-def prune_wanted_record(raw: dict, source: AlbumSource) -> WantedAlbum:
-    """Trim a raw Lidarr wanted-list record down to the fields Soulseekarr actually reads."""
-    return WantedAlbum(
-        id=raw["id"],
-        artistId=raw["artistId"],
-        artist=raw["artist"]["artistName"],
-        title=raw["title"],
-        year=raw["releaseDate"][0:4],
-        source=source,
-    )
-
-
 def get_wanted_albums(cfg: AppConfig) -> WantedAlbums:
     """Return the next batch of eligible wanted albums for this source."""
 
@@ -1553,7 +1553,7 @@ def get_wanted_albums(cfg: AppConfig) -> WantedAlbums:
             page += 1
 
         remaining_albums = WantedAlbums(
-            albums=[prune_wanted_record(raw, cfg.source) for raw in raw_albums]
+            albums=[WantedAlbum.prune_wanted_record(raw, cfg.source) for raw in raw_albums]
         )
 
         if cfg.lidarr.search_type == "shuffle" and not cfg.lidarr.shuffle_all:
