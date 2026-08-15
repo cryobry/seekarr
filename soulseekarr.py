@@ -1013,6 +1013,7 @@ class GrabbedAlbum:
         files = self.files
         rm_dirs = []
         moved_files_history = []
+        move_plan = []
         for file in files:
             file_folder = file["file_dir"].split("\\")[-1]
             filename = file["filename"].split("\\")[-1]
@@ -1025,7 +1026,13 @@ class GrabbedAlbum:
                 rm_dirs.append(src_folder)  # Multi disk albums are sometimes in multiple folders. eg. CD01 CD02. So we need to clean up both
             if "disk_no" in file and "disk_count" in file and file["disk_count"] > 1:
                 filename = f"Disk {file['disk_no']} - {filename}"
-            dst_file = os.path.join(self.staging_folder, filename)
+            dst_file = safe_path(self.staging_folder, filename)
+            if dst_file is None:
+                logger.error("Refusing to move a file to an invalid staging path")
+                return False, rm_dirs
+            move_plan.append((file, src_file, dst_file))
+
+        for file, src_file, dst_file in move_plan:
             file["import_path"] = dst_file
             if os.path.abspath(src_file) == os.path.abspath(dst_file):
                 continue
