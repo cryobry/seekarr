@@ -418,7 +418,8 @@ class WantedAlbum(Album):
                     if downloads and required_filenames <= accepted_filenames:
                         return True, downloads
                     else:
-                        self.cancel_and_delete(downloads)
+                        if downloads:
+                            self.cancel_and_delete(downloads)
                     logger.info(f"Failed to enqueue download to slskd for {self.artist} - {self.title} from {username}")
                 except Exception as e:
                     logger.warning(f"Exception enqueueing tracks: {e}")
@@ -1311,7 +1312,7 @@ def safe_path(download_root: str, *parts: str) -> str | None:
 
 
 def _cancel_and_delete_files(cfg: AppConfig, files: list[dict]) -> None:
-    """Cancel each file's in-progress slskd download and remove its local download folder."""
+    """Cancel each file's in-progress slskd download and remove its local file."""
 
     for file in files:
         try:
@@ -1319,10 +1320,18 @@ def _cancel_and_delete_files(cfg: AppConfig, files: list[dict]) -> None:
         except Exception:
             logger.warning(f"Failed to cancel download {file['filename']} for {file['username']}", exc_info=True)
         filename = file["filename"].split("\\")[-1]
-        if (delete_dir := safe_path(cfg.slskd.download_dir, file["file_dir"].split("\\")[-1])) and (
-            os.path.isdir(delete_dir) and not os.path.islink(delete_dir) and os.path.isfile(os.path.join(delete_dir, filename))
-        ):
-            shutil.rmtree(delete_dir)
+        delete_dir = safe_path(cfg.slskd.download_dir, file["file_dir"].split("\\")[-1])
+        delete_file = safe_path(delete_dir, filename) if delete_dir else None
+        if delete_file and os.path.isfile(delete_file) and not os.path.islink(delete_file):
+            try:
+                os.remove(delete_file)
+            except OSError:
+                logger.warning(f"Failed to remove download file {delete_file}", exc_info=True)
+        if delete_dir and os.path.isdir(delete_dir) and not os.path.islink(delete_dir):
+            try:
+                os.rmdir(delete_dir)
+            except OSError:
+                pass
 
 
 def release_trackcount_mode(releases):
