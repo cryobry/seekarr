@@ -1,7 +1,7 @@
 ---
 lidarr:
   # Get from Lidarr: Settings > General > Security
-  api_key: yourlidarrapikeygoeshere
+  api_key: yourlidarrapikey
   # URL Lidarr uses (e.g., what you use in your browser)
   host_url: http://lidarr:8686
   # URL path to append to host_url (ex. http://lidarr:8686/lidarr = /lidarr)
@@ -9,14 +9,14 @@ lidarr:
   # Path to slskd downloads inside the Lidarr container
   download_dir: /data/slskd_downloads
 
-  # Specifies the order of Lidarr wanted lists to process (e.g. [`missing`, `cutoff_unmet`]).
+  # Specifies which and the order of Lidarr wanted lists to process (e.g. [`missing`, `cutoff_unmet`]).
   sources: 
     - missing
     - cutoff_unmet
 
   # Chunk selection modes: incrementing, random
   # incrementing: splits the wanted list(s) into chunk_size-sized chunks and moves to the next one each run.
-  # random: shuffles the full list once per process and works through it in chunk_size-sized chunks each run.
+  # random: shuffles the active list once per process and works through it in chunk_size-sized chunks each run.
   search_type: incrementing
   # Albums to process per loop. Set this higher than the wanted list to process all records per run.
   chunk_size: 20
@@ -93,19 +93,12 @@ slskd:
   requeue_failed_downloads: True
   # Prepend artist name when searching for albums
   album_prepend_artist: True
-  # Filter downloaded folders down to just the allowed_filetypes and extensions_whitelist,
-  # so extra files bundled in the same folder aren't downloaded
+  # Filter downloaded folders down to just the allowed_filetypes and extensions_whitelist
   filtering: True
   # Also keep files with these extensions even though they don't match allowed_filetypes
-  use_extension_whitelist: True
-  extensions_whitelist:
-    - lrc
-    - nfo
-    - txt
+  extensions_whitelist: [lrc, nfo, txt]
   # Blacklist words in search query (case-insensitive)
-  # search_blacklist:
-  #   - WordToStripFromSearch1
-  #   - WordToStripFromSearch2
+  search_blacklist: [WordToStripFromSearch1, WordToStripFromSearch2]
   # Rename completed downloads to "Artist - Album (Year)" before Lidarr import
   rename_download_folders: True
   # Preferred file types and qualities (most to least preferred)
@@ -118,19 +111,14 @@ slskd:
     - mp3 320
     - mp3
   # Users to ignore
-  # ignored_users:
-  #   - User1
-  #   - User2
+  # ignored_users: [VeryScaryUser1, VeryUglyUser2]
 
 # Per-list overrides (missing.lidarr, missing.slskd, cutoff_unmet.lidarr, and cutoff_unmet.slskd override the top-level `lidarr` and `slskd` defaults)
 # Useful if, for example, you want to accept Vinyl releases for missing albums but only CD/Digital for cutoff-unmet upgrades.
 # Overrides for "missing" list
 # missing:
 #   lidarr:
-#     accepted_formats:
-#       - CD
-#       - Digital Media
-#       - Vinyl
+#     accepted_formats: [CD, Digital Media, Vinyl]
 #   slskd:
 #     allowed_filetypes:
 #       - flac 24/96
@@ -144,9 +132,7 @@ slskd:
 # # Overrides for "cutoff_unmet" list
 # cutoff_unmet:
 #   lidarr:
-#     accepted_formats:
-#       - CD
-#       - Digital Media
+#     accepted_formats: [CD, Digital Media]
 #   slskd:
 #     allowed_filetypes:
 #       - flac 24/192

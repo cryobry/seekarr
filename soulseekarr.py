@@ -5,7 +5,6 @@ import configparser
 import random
 import re
 import os
-import sys
 import time
 import shutil
 import difflib
@@ -20,7 +19,9 @@ import yaml
 from requests.exceptions import HTTPError, RequestException
 from pyarr import LidarrAPI
 from pyarr.exceptions import PyarrError
+from typing import cast
 
+logger = logging.getLogger("soulseekarr")
 
 def expand_env_vars(value):
     """Recursively expand $VAR/${VAR} references in strings loaded from the YAML config."""
@@ -31,16 +32,6 @@ def expand_env_vars(value):
     if isinstance(value, list):
         return [expand_env_vars(item) for item in value]
     return value
-
-
-def as_list(value, lower: bool = False) -> list[str]:
-    """Normalize a YAML list config value into stripped, non-empty items."""
-    if not value:
-        return []
-    if isinstance(value, str):
-        value = [value]  # Treat a bare scalar as a single-item list instead of splitting it into characters.
-    items = [str(item).strip() for item in value if str(item).strip()]
-    return [item.lower() for item in items] if lower else items
 
 
 def env_override(section: str, key: str, value):
@@ -69,13 +60,6 @@ def env_override(section: str, key: str, value):
     return raw
 
 
-def require_config_value(value, name: str):
-    """Raise a clear error if a required config value is missing from both config.yml and its env var."""
-    if value is None or value == "":
-        raise ValueError(f"Missing required config value: {name} (set it in config.yml or via its env var)")
-    return value
-
-
 # Allows backwards compatibility for users updating an older version of Soulseekarr
 # without using the new "logging" section in the config.yml file.
 DEFAULT_LOGGING_CONF = {
@@ -92,7 +76,7 @@ class LidarrConfig:
     url_base: str
     download_dir: str
     disable_sync: bool
-    sources: list[str] # missing, cutoff_unmet
+    sources: list[str]
     search_type: str
     chunk_size: int
     sort_key: str
@@ -128,7 +112,6 @@ class SlskdConfig:
     search_blacklist: list[str]
     album_prepend_artist: bool
     filtering: bool
-    use_extension_whitelist: bool
     extensions_whitelist: list[str]
     rename_download_folders: bool
     allowed_filetypes: list[str]
@@ -158,38 +141,36 @@ class AppConfig:
         resolved_slskd = {**slskd_cfg, **(source_cfg.get("slskd") or {})}
 
         lidarr = LidarrConfig(
-            api_key=require_config_value(env_override("lidarr", "api_key", lidarr_cfg.get("api_key")), "lidarr.api_key"),
-            host_url=require_config_value(env_override("lidarr", "host_url", lidarr_cfg.get("host_url")), "lidarr.host_url"),
+            api_key=env_override("lidarr", "api_key", lidarr_cfg.get("api_key")),
+            host_url=env_override("lidarr", "host_url", lidarr_cfg.get("host_url")),
             url_base=str(env_override("lidarr", "url_base", lidarr_cfg.get("url_base", "/"))),
-            download_dir=require_config_value(env_override("lidarr", "download_dir", lidarr_cfg.get("download_dir")), "lidarr.download_dir"),
+            download_dir=env_override("lidarr", "download_dir", lidarr_cfg.get("download_dir")),
             disable_sync=bool(env_override("lidarr", "disable_sync", resolved_lidarr.get("disable_sync", False))),
-            sources=as_list(env_override("lidarr", "sources", lidarr_cfg.get("sources", ["missing"])), lower=True),
+            sources=list(env_override("lidarr", "sources", lidarr_cfg.get("sources", ["missing"]))),
             search_type=str(env_override("lidarr", "search_type", resolved_lidarr.get("search_type", "incrementing"))).lower().strip(),
             chunk_size=int(env_override("lidarr", "chunk_size", resolved_lidarr.get("chunk_size", 10))),
             sort_key=str(env_override("lidarr", "sort_key", resolved_lidarr.get("sort_key", "albums.title"))).strip(),
             sort_dir=str(env_override("lidarr", "sort_dir", resolved_lidarr.get("sort_dir", "ascending"))).strip().lower(),
-            title_blacklist=as_list(env_override("lidarr", "title_blacklist", resolved_lidarr.get("title_blacklist")), lower=True),
+            title_blacklist=env_override("lidarr", "title_blacklist", resolved_lidarr.get("title_blacklist", [])),
             failed_import_denylist=bool(env_override("lidarr", "failed_import_denylist", resolved_lidarr.get("failed_import_denylist", True))),
             use_selected_lidarr_release=bool(env_override("lidarr", "use_selected_lidarr_release", resolved_lidarr.get("use_selected_lidarr_release", False))),
             use_most_common_tracknum=bool(env_override("lidarr", "use_most_common_tracknum", resolved_lidarr.get("use_most_common_tracknum", True))),
             allow_multi_disc=bool(env_override("lidarr", "allow_multi_disc", resolved_lidarr.get("allow_multi_disc", True))),
-            accepted_countries=as_list(
-                env_override(
-                    "lidarr",
-                    "accepted_countries",
-                    resolved_lidarr.get("accepted_countries", ["Europe", "Japan", "United Kingdom", "United States", "[Worldwide]", "Australia", "Canada"]),
-                )
+            accepted_countries=env_override(
+                "lidarr",
+                "accepted_countries",
+                resolved_lidarr.get("accepted_countries", ["Europe", "Japan", "United Kingdom", "United States", "[Worldwide]", "Australia", "Canada"]),
             ),
             skip_region_check=bool(env_override("lidarr", "skip_region_check", resolved_lidarr.get("skip_region_check", False))),
-            accepted_formats=as_list(env_override("lidarr", "accepted_formats", resolved_lidarr.get("accepted_formats", ["CD", "Digital Media", "Vinyl"]))),
+            accepted_formats=env_override("lidarr", "accepted_formats", resolved_lidarr.get("accepted_formats", ["CD", "Digital Media", "Vinyl"])),
         )
 
         # Pre-set this so we can derive the fallback failed_imports_dir in the download dir
-        slskd_download_dir = require_config_value(env_override("slskd", "download_dir", slskd_cfg.get("download_dir")), "slskd.download_dir")
+        slskd_download_dir = env_override("slskd", "download_dir", slskd_cfg.get("download_dir"))
 
         slskd = SlskdConfig(
-            api_key=require_config_value(env_override("slskd", "api_key", slskd_cfg.get("api_key")), "slskd.api_key"),
-            host_url=require_config_value(env_override("slskd", "host_url", slskd_cfg.get("host_url")), "slskd.host_url"),
+            api_key=env_override("slskd", "api_key", slskd_cfg.get("api_key")),
+            host_url=env_override("slskd", "host_url", slskd_cfg.get("host_url")),
             download_dir=slskd_download_dir,
             failed_imports_dir=str(
                 env_override("slskd", "failed_imports_dir", resolved_slskd.get("failed_imports_dir") or os.path.join(slskd_download_dir, "failed_imports"))
@@ -205,14 +186,13 @@ class AppConfig:
             minimum_peer_upload_speed=int(env_override("slskd", "minimum_peer_upload_speed", resolved_slskd.get("minimum_peer_upload_speed", 0))),
             minimum_match_ratio=float(env_override("slskd", "minimum_filename_match_ratio", resolved_slskd.get("minimum_filename_match_ratio", 0.5))),
             minimum_search_interval=int(env_override("slskd", "minimum_search_interval", resolved_slskd.get("minimum_search_interval", 5))),
-            ignored_users=as_list(env_override("slskd", "ignored_users", resolved_slskd.get("ignored_users"))),
-            search_blacklist=as_list(env_override("slskd", "search_blacklist", resolved_slskd.get("search_blacklist"))),
+            ignored_users=env_override("slskd", "ignored_users", resolved_slskd.get("ignored_users", [])),
+            search_blacklist=env_override("slskd", "search_blacklist", resolved_slskd.get("search_blacklist", [])),
             album_prepend_artist=bool(env_override("slskd", "album_prepend_artist", resolved_slskd.get("album_prepend_artist", False))),
             filtering=bool(env_override("slskd", "filtering", resolved_slskd.get("filtering", False))),
-            use_extension_whitelist=bool(env_override("slskd", "use_extension_whitelist", resolved_slskd.get("use_extension_whitelist", False))),
-            extensions_whitelist=as_list(env_override("slskd", "extensions_whitelist", resolved_slskd.get("extensions_whitelist", ["txt", "nfo", "jpg"]))),
+            extensions_whitelist=env_override("slskd", "extensions_whitelist", resolved_slskd.get("extensions_whitelist", ["txt", "nfo", "jpg"])),
             rename_download_folders=bool(env_override("slskd", "rename_download_folders", resolved_slskd.get("rename_download_folders", True))),
-            allowed_filetypes=as_list(env_override("slskd", "allowed_filetypes", resolved_slskd.get("allowed_filetypes", ["flac", "mp3"]))),
+            allowed_filetypes=env_override("slskd", "allowed_filetypes", resolved_slskd.get("allowed_filetypes", ["flac", "mp3"])),
         )
 
         return cls(
@@ -226,6 +206,7 @@ class AppConfig:
                 else env_override("app", "interval", data.get("interval", 300 if is_docker() else 0))
             ),
         )
+
 
 @dataclass
 class WantedAlbum:
@@ -242,6 +223,7 @@ class WantedAlbum:
     artistName: str
     title: str
     releaseDate: str
+    source: str
     releases: list[dict[str, int]]  # [{"albumId": int}, ...]
 
 
@@ -262,47 +244,28 @@ class GrabbedAlbum:
     process_completed_album()/trigger_lidarr_import() as the download/import progresses.
     """
 
+    id: int
+    source: str
     files: list[dict]
     filetype: str
     title: str
     artist: str
     year: str
-    album_id: int | None = None
     count_start: float | None = None
     rejected_retries: int = 0
     import_folder: str | None = None
 
 
-# ===== API Clients & Logging =====
-lidarr: LidarrAPI = None  # type: ignore[assignment]
-slskd: slskd_api.SlskdClient = None  # type: ignore[assignment]
-logger = logging.getLogger("soulseekarr")
-cfg: AppConfig = None  # type: ignore[assignment]
-
-# ===== Runtime State & Caches =====
-# search_cache/folder_cache/broken_user persist across --interval/SCRIPT_INTERVAL loop iterations
-# within the same process (not reset in run_once()); a fresh process still starts with these empty.
-search_cache: dict = {}
-folder_cache: dict = {}
-broken_user: list = []
-# Albums grabbed while Lidarr sync is disabled, so we don't regrab them on later loops
-# in the same run (Lidarr never learns about them, so it can't tell us itself).
-grabbed_albums: set = set()
-# Albums that failed Lidarr import, keyed by str(album id). In-memory only (not persisted to
-# disk), so it resets on process restart same as grabbed_albums.
-failed_import_denylist: dict[str, FailedImport] = {}
-# Albums still to process from the most recent Lidarr fetch, keyed by source. Each run takes
-# one batch from this list; when it is empty, get_wanted_albums() fetches a fresh wanted list.
-remaining_albums_by_source: dict[str, list[WantedAlbum]] = {}
-
-
-def album_match(lidarr_tracks, slskd_tracks, username, filetype, album_name):
+def album_match(lidarr_tracks, slskd_tracks, username, filetype, album: WantedAlbum):
     """Check whether a user's Soulseek files are a full-album match for the given Lidarr tracks.
 
     Compares each Lidarr track title against every candidate filename with fuzzy string
     matching (plus several filename-cleanup heuristics), requiring every track to clear
-    `cfg.slskd.minimum_match_ratio` for the album to count as matched.
+    `slskd.minimum_match_ratio` for the album to count as matched.
     """
+
+    cfg = source_configs[album.source]
+
     counted = []
     total_match = 0.0
     filetype_ext = filetype.split(" ")[0]
@@ -318,14 +281,14 @@ def album_match(lidarr_tracks, slskd_tracks, username, filetype, album_name):
             ratio = difflib.SequenceMatcher(None, lidarr_filename, slskd_filename).ratio()
 
             # If ratio is a bad match try and split off (with " " as the separator) the garbage at the start of the slskd_filename and try again
-            ratio = check_ratio(" ", ratio, lidarr_filename, slskd_filename)
+            ratio = check_ratio(" ", ratio, lidarr_filename, slskd_filename, album)
             # Same but with "_" as the separator
-            ratio = check_ratio("_", ratio, lidarr_filename, slskd_filename)
+            ratio = check_ratio("_", ratio, lidarr_filename, slskd_filename, album)
 
             # Same checks but prepend album name.
-            ratio = check_ratio("", ratio, album_name + " " + lidarr_filename, slskd_filename)
-            ratio = check_ratio(" ", ratio, album_name + " " + lidarr_filename, slskd_filename)
-            ratio = check_ratio("_", ratio, album_name + " " + lidarr_filename, slskd_filename)
+            ratio = check_ratio("", ratio, album.title + " " + lidarr_filename, slskd_filename, album)
+            ratio = check_ratio(" ", ratio, album.title + " " + lidarr_filename, slskd_filename, album)
+            ratio = check_ratio("_", ratio, album.title + " " + lidarr_filename, slskd_filename, album)
 
             if ratio > best_match:
                 best_match = ratio
@@ -349,7 +312,8 @@ def album_match(lidarr_tracks, slskd_tracks, username, filetype, album_name):
     return False
 
 
-def check_ratio(separator, ratio, lidarr_filename, slskd_filename):
+def check_ratio(separator, ratio, lidarr_filename, slskd_filename, album: WantedAlbum):
+    cfg = source_configs[album.source]
     if ratio < cfg.slskd.minimum_match_ratio:
         if separator != "":
             lidarr_filename_word_count = len(lidarr_filename.split()) * -1
@@ -362,8 +326,9 @@ def check_ratio(separator, ratio, lidarr_filename, slskd_filename):
     return ratio
 
 
-def album_track_num(directory):
+def album_track_num(directory, album):
     files = directory["files"]
+    cfg = source_configs[album.source]
     allowed_filetypes_no_attributes = [item.split(" ")[0] for item in cfg.slskd.allowed_filetypes]
     count = 0
     index = -1
@@ -390,8 +355,11 @@ def sanitize_folder_name(folder_name):
     return valid_characters.strip()
 
 
-def cancel_and_delete(files):
+def cancel_and_delete(files, album):
     """Cancel each file's in-progress slskd download and remove its local download folder."""
+
+    cfg = source_configs[album.source]
+
     for file in files:
         try:
             slskd.transfers.cancel_download(username=file["username"], id=file["id"])
@@ -424,21 +392,26 @@ def release_trackcount_mode(releases):
     return most_common_trackcount
 
 
-def release_format_accepted(release):
+def release_format_accepted(release, album):
     """Check a release's format against `accepted_formats`, unwrapping multi-disc prefixes (e.g. "2xCD" -> "CD")."""
     fmt = release["format"]
+    cfg = source_configs[album.source]
     if fmt[1] == "x" and cfg.lidarr.allow_multi_disc:
         fmt = fmt.split("x", 1)[1]
     return fmt in cfg.lidarr.accepted_formats
 
 
-def choose_release(artist_name, releases):
+def choose_release(album: WantedAlbum, releases):
     """Pick the best release to search for from an album's list of Lidarr releases.
 
     Prefers the release manually selected in Lidarr (if `use_selected_lidarr_release`), then
     the first release matching the accepted countries/formats/status/track-count settings,
     falling back to the most common track count or simply the first release otherwise.
     """
+
+    artist_name = album.artistName
+    cfg = source_configs[album.source]
+
     if cfg.lidarr.use_selected_lidarr_release:
         for release in releases:
             if release.get("monitored"):
@@ -452,7 +425,7 @@ def choose_release(artist_name, releases):
         region_ok = cfg.lidarr.skip_region_check or country in cfg.lidarr.accepted_countries
         track_count_ok = not cfg.lidarr.use_most_common_tracknum or release["trackCount"] == most_common_trackcount
 
-        if region_ok and release_format_accepted(release) and release["status"] == "Official" and track_count_ok:
+        if region_ok and release_format_accepted(release, album) and release["status"] == "Official" and track_count_ok:
             logger.info(
                 ", ".join(
                     [
@@ -514,17 +487,19 @@ def verify_filetype(file, allowed_filetype):
     return str(bitrate) == selected_attributes
 
 
-def download_filter(allowed_filetype, directory):
+def download_filter(allowed_filetype, directory, album: WantedAlbum):
     """Filter a slskd directory listing down to the allowed filetype (and whitelist, if enabled).
 
     This prevents downloading m3u/cue/txt/jpg/etc. files that are sometimes stored alongside
     the music files in the same folder.
     """
-    logger.debug("download_filtering")
+    logger.debug("Filtering downloads")
+
+    cfg = source_configs[album.source]
+
     if cfg.slskd.filtering:
         whitelist = []  # Init an empty list to take just the allowed_filetype
-        if cfg.slskd.use_extension_whitelist:
-            whitelist = copy.deepcopy(cfg.slskd.extensions_whitelist)  # Copy the whitelist to allow us to append the allowed_filetype
+        whitelist = copy.deepcopy(cfg.slskd.extensions_whitelist)  # Copy the whitelist to allow us to append the allowed_filetype
         whitelist.append(allowed_filetype.split(" ")[0])
         unwanted = []
         logger.debug(f"Accepted extensions: {whitelist}")
@@ -549,7 +524,7 @@ def download_filter(allowed_filetype, directory):
     return directory  # If we didn't find unwanted files or we aren't filtering just return the original list
 
 
-def check_for_match(tracks, allowed_filetype, file_dirs, username, album_name):
+def check_for_match(tracks, allowed_filetype, file_dirs, username, album: WantedAlbum):
     """Fetch (and cache) a user's file listing for each candidate folder and check for an album match."""
     if username in broken_user:
         return False, {}, ""
@@ -559,7 +534,7 @@ def check_for_match(tracks, allowed_filetype, file_dirs, username, album_name):
             folder_cache[username] = {}
 
         if file_dir not in folder_cache[username]:
-            logger.info(f"User: {username} Folder: {file_dir} not in cache. Fetching from SLSKD")
+            logger.debug(f"User: {username} Folder: {file_dir} not in cache. Fetching from SLSKD")
 
             try:
                 # Assumes slskd > 0.22.2, whose users.directory() returns a list of directories.
@@ -592,72 +567,60 @@ def check_for_match(tracks, allowed_filetype, file_dirs, username, album_name):
             directory = copy.deepcopy(folder_cache[username][file_dir])
 
         track_num = len(tracks)
-        tracks_info = album_track_num(directory)
+        tracks_info = album_track_num(directory, album)
 
         if tracks_info["count"] == track_num and tracks_info["filetype"] != "":
-            if album_match(tracks, directory["files"], username, allowed_filetype, album_name):
+            if album_match(tracks, directory["files"], username, allowed_filetype, album):
                 return True, directory, file_dir
             else:
                 continue
     return False, {}, ""
 
 
-def is_blacklisted(title: str) -> bool:
+def is_blacklisted(title: str, cfg: AppConfig) -> bool:
     for word in cfg.lidarr.title_blacklist:
-        if word != "" and word in title.lower():
+        if word != "" and word.lower() in title.lower():
             logger.info(f"Skipping {title} due to blacklisted word: {word}")
             return True
     return False
 
 
-def filter_list(albums: list[WantedAlbum]):
-    """Apply the failed-import denylist, disable_sync grabbed-albums, and title blacklist filters.
-
-    Combines what used to be several separate filtering passes into one pass for clarity.
-    """
-    temp_list = list(albums)
-
-    if cfg.lidarr.failed_import_denylist:
-        filtered_temp = []
-        for album in temp_list:
-            if str(album.id) in failed_import_denylist:
-                logger.info(f"Skipping failed import album: {album.artistName} - {album.title} (ID: {album.id})")
-            else:
-                filtered_temp.append(album)
-        temp_list = filtered_temp
-
-    if cfg.lidarr.disable_sync:
-        # Lidarr never learns about these downloads, so it'll keep reporting them as wanted forever.
-        # Track grabs in memory ourselves so we don't redownload the same album on every loop.
-        filtered_temp = []
-        for album in temp_list:
-            if album.id in grabbed_albums:
-                logger.info(f"Skipping already grabbed album: {album.artistName} - {album.title} (ID: {album.id})")
-            else:
-                filtered_temp.append(album)
-        temp_list = filtered_temp
-
-    list_to_download = []
-    for album in temp_list:
-        if is_blacklisted(album.title):
-            logger.info(f"Skipping blacklisted album: {album.artistName} - {album.title} (ID: {album.id}")
+def filter_list(albums: list[WantedAlbum]) -> list[WantedAlbum] | None:
+    """Apply each album's source-specific failed-import, grabbed, and title filters."""
+    filtered_albums = []
+    for album in albums:
+        cfg = source_configs.get(album.source)
+        if cfg is None:
+            logger.warning(f"Skipping album with unknown source {album.source!r}: {album.artistName} - {album.title}")
             continue
-        else:
-            list_to_download.append(album)
 
-    if len(list_to_download) > 0:
-        return list_to_download
-    else:
-        return None
+        if cfg.lidarr.failed_import_denylist and str(album.id) in failed_import_denylist:
+            logger.info(f"Skipping failed import album: {album.artistName} - {album.title} (ID: {album.id})")
+            continue
+
+        if cfg.lidarr.disable_sync and album.id in grabbed_albums:
+            logger.info(f"Skipping already grabbed album: {album.artistName} - {album.title} (ID: {album.id})")
+            continue
+
+        if is_blacklisted(album.title, cfg):
+            logger.info(f"Skipping blacklisted album: {album.artistName} - {album.title} (ID: {album.id})")
+            continue
+
+        filtered_albums.append(album)
+
+    return filtered_albums or None
 
 
-def search_for_album(album: WantedAlbum):
+def search_for_album(album: WantedAlbum) -> bool:
     """Search slskd for an album, poll until the search completes, and cache matching results.
 
     Builds the search query (optionally prepending the artist name and stripping blacklisted
     words), waits for the slskd search to finish or time out, and populates `search_cache` with
     each result's files grouped by user and allowed filetype.
     """
+
+    cfg = source_configs[album.source]
+
     if len(album.title) == 1:  # Need to add some code to wrangle specific artist names in here.. ;)
         query = album.artistName + " " + album.title
     else:
@@ -834,31 +797,32 @@ def prefix_filenames_with_dir(directory, file_dir):
         file["filename"] = file_dir + "\\" + file["filename"]
 
 
-def try_enqueue(all_tracks, results, allowed_filetype, artist_name, album_name):
+def try_enqueue(all_tracks, results, allowed_filetype, album: WantedAlbum):
     """Try to find and enqueue a single-disk album match from any user in `results`."""
+
     for username in results:
         if allowed_filetype not in results[username]:
             continue
         logger.debug(f"Parsing result from user: {username}")
         file_dirs = results[username][allowed_filetype]
-        found, directory, file_dir = check_for_match(all_tracks, allowed_filetype, file_dirs, username, album_name)
+        found, directory, file_dir = check_for_match(all_tracks, allowed_filetype, file_dirs, username, album)
         if found:
-            directory = download_filter(allowed_filetype, directory)
+            directory = download_filter(allowed_filetype, directory, album)
             prefix_filenames_with_dir(directory, file_dir)
             try:
                 downloads = slskd_do_enqueue(username=username, files=directory["files"], file_dir=file_dir)
                 if downloads is not None:
                     return True, downloads
                 else:
-                    logger.info(f"Failed to enqueue download to slskd for {artist_name} - {album_name} from {username}")
+                    logger.info(f"Failed to enqueue download to slskd for {album.artistName} - {album.title} from {username}")
             except Exception as e:
                 logger.warning(f"Exception enqueueing tracks: {e}")
-                logger.info(f"Exception enqueueing download to slskd for {artist_name} - {album_name} from {username}")
-    logger.info(f"Failed to enqueue {artist_name} - {album_name}")
+                logger.info(f"Exception enqueueing download to slskd for {album.artistName} - {album.title} from {username}")
+    logger.info(f"Failed to enqueue {album.artistName} - {album.title}")
     return False, None
 
 
-def try_multi_enqueue(release, all_tracks, results, allowed_filetype, artist_name, album_name):
+def try_multi_enqueue(release, all_tracks, results, allowed_filetype, album: WantedAlbum):
     """Try to find and enqueue a multi-disk album match, sourcing each disk independently.
 
     Requires every disk in the release to be matched (by any user) before enqueueing; if any
@@ -882,9 +846,9 @@ def try_multi_enqueue(release, all_tracks, results, allowed_filetype, artist_nam
             if allowed_filetype not in results[username]:
                 continue
             file_dirs = results[username][allowed_filetype]
-            found, directory, file_dir = check_for_match(disk["tracks"], allowed_filetype, file_dirs, username, album_name)
+            found, directory, file_dir = check_for_match(disk["tracks"], allowed_filetype, file_dirs, username, album)
             if found:
-                directory = download_filter(allowed_filetype, directory)
+                directory = download_filter(allowed_filetype, directory, album)
                 disk["source"] = (username, directory, file_dir)
                 count_found += 1
                 break
@@ -908,24 +872,24 @@ def try_multi_enqueue(release, all_tracks, results, allowed_filetype, artist_nam
                     all_downloads.extend(downloads)
                     enqueued += 1
                 else:
-                    logger.info(f"Failed to enqueue download to slskd for {artist_name} - {album_name} from {username}")
+                    logger.info(f"Failed to enqueue download to slskd for {album.artistName} - {album.title} from {username}")
                     # Delete ALL other downloads in all_downloads list
                     if len(all_downloads) > 0:
-                        cancel_and_delete(all_downloads)
+                        cancel_and_delete(all_downloads, album)
                         return False, None
             except Exception:
                 logger.exception("Exception enqueueing tracks")
-                logger.info(f"Exception enqueueing download to slskd for {artist_name} - {album_name} from {username}")
+                logger.info(f"Exception enqueueing download to slskd for {album.artistName} - {album.title} from {username}")
                 # Delete all other downloads in all_downloads list
                 if len(all_downloads) > 0:
-                    cancel_and_delete(all_downloads)
+                    cancel_and_delete(all_downloads, album)
                     return False, None
         if enqueued == total:
             return True, all_downloads
         else:
             # Delete all other downloads
             if len(all_downloads) > 0:
-                cancel_and_delete(all_downloads)
+                cancel_and_delete(all_downloads, album)
             return False, None
 
     else:
@@ -938,15 +902,13 @@ def find_download(album: WantedAlbum) -> GrabbedAlbum | None:
     For each quality, tries the single-disk match path first, falling back to the multi-disk
     path for multi-media releases. Returns a populated `GrabEntry` on success, or None.
     """
-    album_id = album.id
-    artist_name = album.artistName
-    album_name = album.title
-    artist_id = album.artistId
-    results = search_cache[album_id]
+
+    cfg = source_configs[album.source]
+    results = search_cache[album.id]
 
     # Releases/tracks don't change per quality, so fetch them once and reuse across the
     # allowed_filetypes loop below instead of hitting the Lidarr API for every quality.
-    releases = lidarr.get_album(album_id)["releases"]
+    releases = lidarr.get_album(album.id)["releases"]
     tracks_by_release: dict = {}
 
     for allowed_filetype in cfg.slskd.allowed_filetypes:
@@ -959,65 +921,78 @@ def find_download(album: WantedAlbum) -> GrabbedAlbum | None:
         for _ in range(0, len(remaining_releases)):
             if len(remaining_releases) == 0:
                 break
-            release = choose_release(artist_name, remaining_releases)
+            release = choose_release(album, remaining_releases)
             remaining_releases.remove(release)
             release_id = release["id"]
             if release_id not in tracks_by_release:
-                tracks_by_release[release_id] = lidarr.get_tracks(artistId=artist_id, albumId=album_id, albumReleaseId=release_id)
+                tracks_by_release[release_id] = lidarr.get_tracks(artistId=album.artistId, albumId=album.id, albumReleaseId=release_id)
             all_tracks = tracks_by_release[release_id]
-            found, downloads = try_enqueue(all_tracks, results, allowed_filetype, artist_name, album_name)
+            found, downloads = try_enqueue(all_tracks, results, allowed_filetype, album)
 
             if not found and len(release["media"]) > 1:
-                found, downloads = try_multi_enqueue(release, all_tracks, results, allowed_filetype, artist_name, album_name)
+                found, downloads = try_multi_enqueue(release, all_tracks, results, allowed_filetype, album)
 
             if found:
                 return GrabbedAlbum(
+                    source=album.source,
+                    id=album.id,
                     files=downloads,
                     filetype=allowed_filetype,
-                    title=album_name,
-                    artist=artist_name,
+                    title=album.title,
+                    artist=album.artistName,
                     year=album.releaseDate[0:4],
                 )
     return None
 
 
-def search_and_queue(albums):
+def search_and_queue(albums: list[WantedAlbum]) -> tuple[list[GrabbedAlbum], list[WantedAlbum], list[WantedAlbum]]:
     """Search and enqueue every album in `albums`, respecting `minimum_search_interval`.
 
     Returns (grab_list, failed_search, failed_grab): `grab_list` holds the enqueued downloads,
     `failed_search` holds albums with no slskd search results, and `failed_grab` holds albums
     that had results but no match/enqueue succeeded.
     """
-    grab_list: dict[int, GrabbedAlbum] = {}
-    failed_grab = []
-    failed_search = []
-    for i, album in enumerate(albums):
+    grab_list: list[GrabbedAlbum] = []
+    failed_grab: list[WantedAlbum] = []
+    failed_search: list[WantedAlbum] = []
+
+    album_iterator = iter(albums)
+    album = next(album_iterator, None)
+
+    while album is not None:
+        next_album = next(album_iterator, None)
         search_start = time.time()
         if search_for_album(album):
-            entry = find_download(album)
+            entry: GrabbedAlbum | None = find_download(album)
             if entry is not None:
-                grab_list[album.id] = entry
+                grab_list.append(entry)
             else:
                 failed_grab.append(album)
         else:
             failed_search.append(album)
 
-        if cfg.slskd.minimum_search_interval > 0 and i < len(albums) - 1:
+        cfg = source_configs[album.source]
+
+        if cfg.slskd.minimum_search_interval > 0 and next_album is not None:
             elapsed = time.time() - search_start
             remaining = cfg.slskd.minimum_search_interval - elapsed
             if remaining > 0:
                 logger.info(f"Search completed in {elapsed:.1f}s, waiting {remaining:.1f}s to meet minimum_search_interval")
                 time.sleep(remaining)
 
+        album = next_album
+
     return grab_list, failed_search, failed_grab
 
 
-def move_album_files(files, import_folder_fullpath):
+def move_album_files(album: GrabbedAlbum, import_folder_fullpath):
     """Move/rename each file into the shared import folder, tracking source folders to clean up.
 
     Returns (success, rm_dirs). On failure, already-moved files are rolled back to their
     original location and the caller is responsible for removing the (now-empty) import folder.
     """
+    files = album.files
+    cfg = source_configs[album.source]
     rm_dirs = []
     moved_files_history = []
     for file in files:
@@ -1072,6 +1047,9 @@ def tag_album_files(files, artist, title):
 
 def trigger_lidarr_import(album: GrabbedAlbum, failed_grab):
     """Ask Lidarr to scan the import folder, wait for the command to finish, and record failures."""
+
+    cfg = source_configs[album.source]
+
     command = lidarr.post_command(
         name="DownloadedAlbumsScan",
         path=album.import_folder,
@@ -1088,8 +1066,8 @@ def trigger_lidarr_import(album: GrabbedAlbum, failed_grab):
         logger.info(f"{current_task['commandName']} {current_task['message']} from: {current_task['body']['path']}")
 
         if "Failed" in current_task["message"]:
-            folder_path = move_failed_import(current_task["body"]["path"])
-            pruned_album = prune_wanted_record(lidarr.get_album(album.album_id))
+            folder_path = move_failed_import(current_task["body"]["path"], album)
+            pruned_album = prune_wanted_record(lidarr.get_album(album.id), album.source)
             failed_grab.append(pruned_album)
             if cfg.lidarr.failed_import_denylist:
                 add_to_failed_import_denylist(pruned_album, folder_path)
@@ -1106,6 +1084,9 @@ def process_completed_album(album: GrabbedAlbum, failed_grab):
     album in `failed_grab` (and the failed-import denylist) if the Lidarr import itself fails.
     If `disable_sync` is set, skips the Lidarr import entirely and just tracks the grab.
     """
+
+    cfg = source_configs[album.source]
+
     if cfg.slskd.rename_download_folders is True:
         import_folder_name = sanitize_folder_name(album.artist + " - " + album.title + " (" + album.year + ")")
     else:
@@ -1116,13 +1097,13 @@ def process_completed_album(album: GrabbedAlbum, failed_grab):
     if not os.path.exists(import_folder_fullpath):
         os.mkdir(import_folder_fullpath)
 
-    success, rm_dirs = move_album_files(album.files, import_folder_fullpath)
+    success, rm_dirs = move_album_files(album, import_folder_fullpath)
     if not success:
         try:
             os.rmdir(import_folder_fullpath)
         except OSError:
             logger.warning(f"Could not remove temp import directory {import_folder_fullpath}")
-        failed_grab.append(prune_wanted_record(lidarr.get_album(album.album_id)))
+        failed_grab.append(prune_wanted_record(lidarr.get_album(album.id), album.source))
         return
 
     for rm_dir in rm_dirs:
@@ -1134,7 +1115,7 @@ def process_completed_album(album: GrabbedAlbum, failed_grab):
 
     if cfg.lidarr.disable_sync:
         logger.info(f"Sync disabled. Skipping Lidarr import of {album.artist} - {album.title}")
-        grabbed_albums.add(album.album_id)
+        grabbed_albums.add(album.id)
         return
 
     logger.info(f"Attempting Lidarr import of {album.artist} - {album.title}")
@@ -1142,7 +1123,7 @@ def process_completed_album(album: GrabbedAlbum, failed_grab):
     trigger_lidarr_import(album, failed_grab)
 
 
-def monitor_downloads(grab_list: dict[int, GrabbedAlbum], failed_grab):
+def monitor_downloads(grab_list: list[GrabbedAlbum], failed_grab):
     """Poll slskd until every album in `grab_list` finishes, errors out, or times out.
 
     Handles per-file hard errors (cancelled/timed out/errored/aborted) and rejections by
@@ -1151,16 +1132,16 @@ def monitor_downloads(grab_list: dict[int, GrabbedAlbum], failed_grab):
     """
     MAX_FILE_RETRIES = 4  # Max requeue attempts per file for hard errors (Errored, Cancelled, etc.)
 
-    def delete_album(album_id, reason):
-        album = grab_list.pop(album_id)
-        cancel_and_delete(album.files)
+    def delete_album(album: GrabbedAlbum, reason: str) -> None:
+        grab_list.remove(album)
+        cancel_and_delete(album.files, album)
         logger.info(f"{reason} Album: {album.title} Artist: {album.artist}")
-        failed_grab.append(prune_wanted_record(lidarr.get_album(album_id)))
+        failed_grab.append(prune_wanted_record(lidarr.get_album(album.id), album.source))
 
-    def fail_album(album_id, condition, reason="Failed grab of"):
+    def fail_album(album: GrabbedAlbum, condition: bool, reason="Failed grab of") -> bool:
         """Delete the album if `condition` is true. Returns `condition` for one-line early-outs."""
         if condition:
-            delete_album(album_id, reason)
+            delete_album(album, reason)
         return condition
 
     def requeue_file(album, file):
@@ -1175,44 +1156,46 @@ def monitor_downloads(grab_list: dict[int, GrabbedAlbum], failed_grab):
             return True
         return False
 
-    def handle_hard_error(album_id, album, file, problems):
+    def handle_hard_error(album: GrabbedAlbum, file, problems):
         """Handle Cancelled/TimedOut/Errored/Aborted files.
 
         Returns True if the album was deleted (caller should stop processing this album).
         """
-        if fail_album(album_id, len(problems) == len(album.files) or not cfg.slskd.requeue_failed_downloads):
+        cfg = source_configs[album.source]
+        if fail_album(album, len(problems) == len(album.files) or not cfg.slskd.requeue_failed_downloads):
             return True
         file.setdefault("retry", 0)
         file["retry"] += 1
-        if fail_album(album_id, file["retry"] > MAX_FILE_RETRIES):
+        if fail_album(album, file["retry"] > MAX_FILE_RETRIES):
             return True
-        return fail_album(album_id, not requeue_file(album, file))
+        return fail_album(album, not requeue_file(album, file))
 
-    def handle_rejected(album_id, album, file, problems):
+    def handle_rejected(album: GrabbedAlbum, file, problems):
         """Handle Rejected files.
 
         Returns True if the album was deleted or a requeue was attempted (caller should stop
         processing this album this iteration). Rejected files often indicate grab limits; we
         wait for all other files to reach a stable state before requeuing.
         """
+        cfg = source_configs[album.source]
         files = album.files
-        if fail_album(album_id, len(problems) == len(files) or not cfg.slskd.requeue_failed_downloads):
+        if fail_album(album, len(problems) == len(files) or not cfg.slskd.requeue_failed_downloads):
             return True
         # Only requeue once all non-problem files have settled (no files mid-transfer).
         stable_states = ("Completed, Succeeded", "Queued, Remotely", "Queued, Locally")
         accounted = sum(1 for f in files if f["status"]["state"] in stable_states) + len(problems)
         if accounted < len(files):
             return False
-        if fail_album(album_id, album.rejected_retries >= int(len(files) * 1.2)):
+        if fail_album(album, album.rejected_retries >= int(len(files) * 1.2)):
             return True
-        if fail_album(album_id, not requeue_file(album, file)):
+        if fail_album(album, not requeue_file(album, file)):
             return True
         album.rejected_retries += 1
         return True  # Requeued one file; wait for next monitoring iteration
 
     while True:
-        for album_id in list(grab_list.keys()):
-            album = grab_list[album_id]
+        for album in grab_list:
+            cfg = source_configs[album.source]
 
             if not slskd_download_status(album.files):
                 continue
@@ -1223,30 +1206,29 @@ def monitor_downloads(grab_list: dict[int, GrabbedAlbum], failed_grab):
                 album.count_start = time.time()
             elapsed = time.time() - album.count_start
 
-            if fail_album(album_id, elapsed >= cfg.slskd.stalled_timeout, "Timeout waiting for download of"):
+            if fail_album(album, elapsed >= cfg.slskd.stalled_timeout, "Timeout waiting for download of"):
                 continue
-            if fail_album(album_id, queued == len(album.files) and elapsed >= cfg.slskd.remote_queue_timeout, "Timeout waiting for download of"):
+            if fail_album(album, queued == len(album.files) and elapsed >= cfg.slskd.remote_queue_timeout, "Timeout waiting for download of"):
                 continue
 
             if album_done:
-                album.album_id = album_id
                 logger.info(f"Completed download of Album: {album.title} Artist: {album.artist}")
                 process_completed_album(album, failed_grab)
-                del grab_list[album_id]
+                grab_list.remove(album)
                 continue
 
             if problems:
                 logger.debug("Files with errors detected.")
                 for file in problems:
-                    if album_id not in grab_list:
+                    if album not in grab_list:
                         break
                     logger.debug(f"Checking {file['filename']}")
                     state = file["status"]["state"]
                     if state in ("Completed, Cancelled", "Completed, TimedOut", "Completed, Errored", "Completed, Aborted"):
-                        if handle_hard_error(album_id, album, file, problems):
+                        if handle_hard_error(album, file, problems):
                             break
                     elif state == "Completed, Rejected":
-                        if handle_rejected(album_id, album, file, problems):
+                        if handle_rejected(album, file, problems):
                             break
                     else:
                         logger.error(f"Unexpected file state in problem list: {state}")
@@ -1257,7 +1239,7 @@ def monitor_downloads(grab_list: dict[int, GrabbedAlbum], failed_grab):
         time.sleep(5)
 
 
-def grab_most_wanted(albums):
+def grab_most_wanted(albums: list[WantedAlbum]) -> int:
     """Search, enqueue, monitor, and import every album in `albums`.
 
     Searches and enqueues downloads for all albums first, then monitors and imports them as a
@@ -1268,14 +1250,11 @@ def grab_most_wanted(albums):
 
     total_albums = len(grab_list)
     logger.info(f"Total Downloads added: {total_albums}")
-    for album_id in grab_list:
-        logger.info(f"Album: {grab_list[album_id].title} Artist: {grab_list[album_id].artist}")
+    for album in grab_list:
+        logger.info(f"Album: {album.title} Artist: {album.artist}")
     logger.info(f"Failed to grab: {len(failed_grab)}")
     for album in failed_grab:
         logger.info(f"Album: {album.title} Artist: {album.artistName}")
-
-    logger.info("-------------------")
-    logger.info(f"Waiting for downloads... monitor at: {''.join([cfg.slskd.host_url, cfg.slskd.url_base, 'downloads'])}")
 
     monitor_downloads(grab_list, failed_grab)
 
@@ -1287,8 +1266,9 @@ def grab_most_wanted(albums):
 
     return count
 
-def move_failed_import(src_path):
+def move_failed_import(src_path, album):
     """Move a failed Lidarr import's folder into `cfg.slskd.failed_imports_dir`, avoiding name clashes."""
+    cfg = source_configs[album.source]
     failed_imports_dir = cfg.slskd.failed_imports_dir
 
     if not os.path.exists(failed_imports_dir):
@@ -1385,7 +1365,6 @@ def migrate_soularr_ini_config(config_dir: str) -> bool:
             "search_blacklist": get_csv("Search Settings", "search_blacklist"),
             "album_prepend_artist": get_bool("Search Settings", "album_prepend_artist", False),
             "filtering": get_bool("Download Settings", "download_filtering", False),
-            "use_extension_whitelist": get_bool("Download Settings", "use_extension_whitelist", False),
             "extensions_whitelist": get_csv("Download Settings", "extensions_whitelist", "txt,nfo,jpg"),
             "rename_download_folders": get_bool("Download Settings", "rename_download_folders", True),
             "allowed_filetypes": get_csv("Search Settings", "allowed_filetypes", "flac,mp3"),
@@ -1452,7 +1431,7 @@ def setup_logging(config: dict, var_dir: str) -> None:
         logger.info(f"Logging to file: {log_file_path}")
 
 
-def prune_wanted_record(raw: dict) -> WantedAlbum:
+def prune_wanted_record(raw: dict, source: str) -> WantedAlbum:
     """Trim a raw Lidarr wanted-list record down to the fields Soulseekarr actually reads."""
     return WantedAlbum(
         id=raw["id"],
@@ -1460,19 +1439,18 @@ def prune_wanted_record(raw: dict) -> WantedAlbum:
         artistName=raw["artist"]["artistName"],
         title=raw["title"],
         releaseDate=raw["releaseDate"],
+        source=source,
         releases=[{"albumId": release["albumId"]} for release in raw.get("releases", [])],
     )
 
 
-def get_wanted_albums() -> list[WantedAlbum]:
+def get_wanted_albums(cfg: AppConfig) -> list[WantedAlbum]:
     """Return the next batch of wanted albums for the active source configuration.
 
     Reuses albums left over from the last fetch. When none remain, fetches Lidarr's complete
     wanted list, removes albums already in Lidarr's download queue, and saves the unreturned
     albums for later runs.
     """
-    if cfg.source is None:
-        raise ValueError("Cannot fetch wanted albums without a source")
 
     remaining_albums = remaining_albums_by_source.get(cfg.source, [])
 
@@ -1507,7 +1485,7 @@ def get_wanted_albums() -> list[WantedAlbum]:
             raw_albums.extend(wanted_page["records"])
             page += 1
 
-        remaining_albums = filter_queued_records([prune_wanted_record(raw) for raw in raw_albums])
+        remaining_albums = filter_queued_records([prune_wanted_record(raw, cfg.source) for raw in raw_albums])
         if cfg.lidarr.search_type == "random":
             random.shuffle(remaining_albums)
 
@@ -1572,46 +1550,10 @@ def add_to_failed_import_denylist(album: WantedAlbum, folder_path: str | None = 
         logger.info(f"Added to failed import denylist: {album.artistName} - {album.title} (ID: {album.id})")
 
 
-def run_once(source_cfg: AppConfig) -> int:
-    """Runs a single Soulseekarr cycle: fetch wanted albums, search, download, and import. Returns a process exit code."""
-    global cfg
-    cfg = source_cfg
-
-    logger.info(f"Getting wanted albums from {cfg.source}")
-    try:
-        wanted_albums: list[WantedAlbum] = get_wanted_albums()
-    except ValueError as ex:
-        logger.error(f"An error occurred: {ex}")
-        return 0
-
-    if not wanted_albums:
-        logger.info("No releases wanted.")
-        return 0
-
-    logger.info(f"Fetched {len(wanted_albums)} releases from '{cfg.source}' list that aren't on the deny list and/or blacklisted.")
-
-    try:
-        filtered_wanted_albums = filter_list(wanted_albums)
-        if filtered_wanted_albums is not None:
-            total_failed = grab_most_wanted(filtered_wanted_albums)
-            if total_failed == 0:
-                logger.info("Soulseekarr finished.")
-            else:
-                logger.info(f"{total_failed}: releases failed to find a match in the search results and are still wanted.")
-        else:
-            logger.info(f"No releases fetched from '{cfg.source}' list that aren't on the deny list and/or blacklisted.")
-        if cfg.slskd.remove_completed_downloads:
-            slskd.transfers.remove_completed_downloads()
-    except Exception:
-        logger.exception("Fatal error!")
-        return 0
-
-    return 0
-
-
 def main():
     """Parse CLI arguments, resolve configuration, then run Soulseekarr once or on a loop."""
-    global lidarr, slskd
+    global lidarr, slskd, source_configs
+    global search_cache, folder_cache, broken_user, grabbed_albums, failed_import_denylist, remaining_albums_by_source
     # Allow some overrides to be passed to the script
     parser = argparse.ArgumentParser(description="""Soulseekarr reads all of your "wanted" albums/artists from Lidarr and downloads them using Slskd""")
 
@@ -1683,26 +1625,81 @@ def main():
             raw_config = expand_env_vars(yaml.safe_load(config_file) or {})
         setup_logging(raw_config, args.var_dir)
 
-        cfg = AppConfig.from_yaml(raw_config, args)
+        cfg: AppConfig = AppConfig.from_yaml(raw_config, args)
+        interval: int = cfg.interval
 
         # Initialize the API clients with the resolved configuration
         slskd = slskd_api.SlskdClient(host=cfg.slskd.host_url, api_key=cfg.slskd.api_key, url_base=cfg.slskd.url_base)
         lidarr = LidarrAPI(urljoin(f"{cfg.lidarr.host_url.rstrip('/')}/", cfg.lidarr.url_base.strip("/")), cfg.lidarr.api_key)
 
-        source_configs = [
-            AppConfig.from_yaml(raw_config, args, source=source)
+        # Return a list of wanted list-specific AppConfig instances
+        source_configs = {
+            source: AppConfig.from_yaml(raw_config, args, source=source)
             for source in cfg.lidarr.sources
-        ]
+        }
 
-        if cfg.interval > 0:
-            while True:
-                for source_cfg in source_configs:
-                    run_once(source_cfg)
-                logger.info(f"Waiting {cfg.interval} seconds before checking again...")
-                time.sleep(cfg.interval)
-        else:
-            for source_cfg in source_configs:
-                run_once(source_cfg)
+        # search_cache/folder_cache/broken_user persist across --interval/SCRIPT_INTERVAL loop iterations
+        # within the same process (not reset in run_once()); a fresh process still starts with these empty.
+        search_cache = {}
+        folder_cache = {}
+        broken_user = []
+        # Albums grabbed while Lidarr sync is disabled, so we don't regrab them on later loops
+        # in the same run (Lidarr never learns about them, so it can't tell us itself).
+        grabbed_albums = set()
+        # Albums that failed Lidarr import, keyed by str(album id). In-memory only (not persisted to
+        # disk), so it resets on process restart same as grabbed_albums.
+        failed_import_denylist = {}
+        # Albums still to process from the most recent Lidarr fetch, keyed by source. Each run takes
+        # one batch from this list; when it is empty, get_wanted_albums() fetches a fresh wanted list.
+        remaining_albums_by_source = {}
+
+        while True:
+            wanted_albums: list[WantedAlbum] = []
+            # Grab wanted albums from each configured source
+            for source, config in source_configs.items():
+                logger.info(f"Getting wanted albums from '{source}' list")
+                try:
+                    albums_to_append: list[WantedAlbum] = get_wanted_albums(config)
+                    if albums_to_append:
+                        logger.info(f"Fetched {len(albums_to_append)} albums from '{source}' list that aren't on the deny list and/or blacklisted.")
+                        wanted_albums.extend(albums_to_append)
+                    else:
+                        logger.info(f"No albums fetched from '{source}' list that aren't on the deny list and/or blacklisted.")
+                        continue
+                except ValueError as ex:
+                    logger.error(f"An error occurred: {ex}")
+                    time.sleep(interval)
+                    continue
+
+            if not wanted_albums:
+                logger.info("No wanted albums available.")
+                time.sleep(interval)
+                continue
+
+            logger.info(f"Total wanted albums to process: {len(wanted_albums)}")
+            logger.debug(f"Fetched {len(wanted_albums)} albums from the '{' and '.join(source_configs.keys())}' list(s) that aren't on the deny list and/or blacklisted.")
+
+            try:
+                filtered_wanted_albums = filter_list(wanted_albums)
+                if filtered_wanted_albums is not None:
+                    total_failed = grab_most_wanted(filtered_wanted_albums)
+                    if total_failed == 0:
+                        logger.info("Soulseekarr finished.")
+                    else:
+                        logger.info(f"{total_failed}: releases failed to find a match in the search results and are still wanted.")
+                else:
+                    logger.info("No releases fetched that aren't on the deny list and/or blacklisted.")
+                if cfg.slskd.remove_completed_downloads:
+                    slskd.transfers.remove_completed_downloads()
+            except Exception:
+                logger.exception("Fatal error!")
+                return 0
+
+            if interval > 0:
+                time.sleep(interval)
+            else:
+                break
+
     finally:
         remove_lock_file(lock_file_path)
 
