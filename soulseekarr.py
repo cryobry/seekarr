@@ -1161,7 +1161,11 @@ class GrabbedAlbum:
                 return
             time.sleep(2)
 
-        failed = current_task["status"] == "failed"
+        failed = (
+            not isinstance(current_task, dict)
+            or current_task.get("status") == "failed"
+            or current_task.get("result") == "unsuccessful"
+        )
         self.wanted_album.grab_failed = failed
 
         try:
