@@ -41,23 +41,29 @@ def env_override(section: str, key: str, value):
     Matches the YAML path (e.g. lidarr.api_key -> LIDARR_API_KEY), coercing the env var to
     match the existing value's type.
     """
-    raw = os.environ.get(f"{section}_{key}".upper())
+    env_name = f"{section}_{key}".upper()
+    raw = os.environ.get(env_name)
     if raw is None:
         return value
     if isinstance(value, bool):
-        return raw.strip().lower() in ("1", "true", "yes", "on")
+        normalized = raw.strip().lower()
+        if normalized in ("1", "true", "yes", "on"):
+            return True
+        if normalized in ("0", "false", "no", "off"):
+            return False
+        raise ValueError(f"{env_name} must be a boolean, got {raw!r}")
     if isinstance(value, list):
-        return raw.split(",")
+        return [item.strip() for item in raw.split(",") if item.strip()]
     if isinstance(value, int):
         try:
             return int(raw)
-        except ValueError:
-            return raw
+        except ValueError as ex:
+            raise ValueError(f"{env_name} must be an integer, got {raw!r}") from ex
     if isinstance(value, float):
         try:
             return float(raw)
-        except ValueError:
-            return raw
+        except ValueError as ex:
+            raise ValueError(f"{env_name} must be a number, got {raw!r}") from ex
     return raw
 
 
@@ -141,14 +147,18 @@ class AppConfig:
         source_cfg: dict = (data.get(source) or {}) if source else {}
         resolved_lidarr = {**lidarr_cfg, **(source_cfg.get("lidarr") or {})}
         resolved_slskd = {**slskd_cfg, **(source_cfg.get("slskd") or {})}
+        sources = list(env_override("lidarr", "sources", resolved_lidarr.get("sources", ["missing"])))
+        invalid_sources = [source for source in sources if source not in ("missing", "cutoff_unmet")]
+        if invalid_sources:
+            raise ValueError(f"LIDARR_SOURCES contains unsupported values: {invalid_sources}")
 
         lidarr = LidarrConfig(
-            api_key=env_override("lidarr", "api_key", lidarr_cfg.get("api_key")),
-            host_url=env_override("lidarr", "host_url", lidarr_cfg.get("host_url")),
-            url_base=str(env_override("lidarr", "url_base", lidarr_cfg.get("url_base", "/"))),
-            download_dir=env_override("lidarr", "download_dir", lidarr_cfg.get("download_dir")),
+            api_key=env_override("lidarr", "api_key", resolved_lidarr.get("api_key")),
+            host_url=env_override("lidarr", "host_url", resolved_lidarr.get("host_url")),
+            url_base=str(env_override("lidarr", "url_base", resolved_lidarr.get("url_base", "/"))),
+            download_dir=env_override("lidarr", "download_dir", resolved_lidarr.get("download_dir")),
             disable_sync=bool(env_override("lidarr", "disable_sync", resolved_lidarr.get("disable_sync", False))),
-            sources=list(env_override("lidarr", "sources", lidarr_cfg.get("sources", ["missing"]))),
+            sources=sources,
             search_type=str(env_override("lidarr", "search_type", resolved_lidarr.get("search_type", "incrementing"))).lower().strip(),
             chunk_size=int(env_override("lidarr", "chunk_size", resolved_lidarr.get("chunk_size", 10))),
             sort_key=str(env_override("lidarr", "sort_key", resolved_lidarr.get("sort_key", "albums.title"))).strip(),
@@ -168,16 +178,16 @@ class AppConfig:
         )
 
         # Pre-set this so we can derive the fallback failed_imports_dir in the download dir
-        slskd_download_dir = env_override("slskd", "download_dir", slskd_cfg.get("download_dir"))
+        slskd_download_dir = env_override("slskd", "download_dir", resolved_slskd.get("download_dir"))
 
         slskd = SlskdConfig(
-            api_key=env_override("slskd", "api_key", slskd_cfg.get("api_key")),
-            host_url=env_override("slskd", "host_url", slskd_cfg.get("host_url")),
+            api_key=env_override("slskd", "api_key", resolved_slskd.get("api_key")),
+            host_url=env_override("slskd", "host_url", resolved_slskd.get("host_url")),
             download_dir=slskd_download_dir,
             failed_imports_dir=str(
                 env_override("slskd", "failed_imports_dir", resolved_slskd.get("failed_imports_dir") or os.path.join(slskd_download_dir, "failed_imports"))
             ),
-            url_base=str(env_override("slskd", "url_base", slskd_cfg.get("url_base", "/"))),
+            url_base=str(env_override("slskd", "url_base", resolved_slskd.get("url_base", "/"))),
             stalled_timeout=int(env_override("slskd", "stalled_timeout", resolved_slskd.get("stalled_timeout", 3600))),
             remote_queue_timeout=int(env_override("slskd", "remote_queue_timeout", resolved_slskd.get("remote_queue_timeout", 300))),
             delete_searches=bool(env_override("slskd", "delete_searches", resolved_slskd.get("delete_searches", True))),
@@ -205,7 +215,10 @@ class AppConfig:
             interval=int(
                 args.interval
                 if args.interval is not None
-                else env_override("app", "interval", data.get("interval", 300 if is_docker() else 0))
+                else os.getenv(
+                    "LOOP_INTERVAL",
+                    os.getenv("SCRIPT_INTERVAL", os.getenv("APP_INTERVAL", data.get("interval", 300 if is_docker() else 0))),
+                )
             ),
         )
 

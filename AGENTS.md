@@ -39,7 +39,7 @@ in this one module. Do not split it into a package unless the user explicitly as
 
 - No test suite exists in this repo.
 - Run directly: `python soulseekarr.py --config-dir <dir> --var-dir <dir>` (defaults to CWD, or `/data`
-  when `IN_DOCKER` is set). Use `--interval N` or `SCRIPT_INTERVAL` env var to loop instead of
+  when `IN_DOCKER` is set). Use `--interval N` or `LOOP_INTERVAL` env var to loop instead of
   running once.
 - Docker image builds from [Dockerfile](Dockerfile) (`python:3.14` base). The
   [docker workflow](.github/workflows/docker.yaml) only triggers when `soulseekarr.py` changes

@@ -7,7 +7,7 @@ services:
     environment:
       - TZ=UTC
       # Script interval in seconds
-      - SCRIPT_INTERVAL=300
+      - LOOP_INTERVAL=300
     user: "1000:1000"
     volumes:
       # /downloads should typically match slskd.download_dir in your config file or SLSKD_DOWNLOAD_DIR env.
