@@ -10,8 +10,12 @@ logger = logging.getLogger("soulseekarr")
 
 DEFAULT_LOGGING_CONF = {
     "level": "INFO",
-    "format": "[%(levelname)s|%(module)s|L%(lineno)d] %(asctime)s: %(message)s",
+    "format": "[%(levelname)s|%(name)s|L%(lineno)d] %(asctime)s: %(message)s",
     "datefmt": "%Y-%m-%dT%H:%M:%S%z",
+    "log_to_file": True,
+    "log_file": "soulseekarr.log",
+    "max_bytes": 1048576,
+    "backup_count": 3,
 }
 
 

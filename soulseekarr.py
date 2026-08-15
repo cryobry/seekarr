@@ -21,11 +21,19 @@ from collections import Counter
 from requests.exceptions import HTTPError, RequestException
 from pyarr import LidarrAPI
 from pyarr.exceptions import PyarrError
-from migration import DEFAULT_LOGGING_CONF, expand_env_vars, migrate_soularr_ini_config
+from migration import expand_env_vars, migrate_soularr_ini_config
 
 logger = logging.getLogger("soulseekarr")
 
-TRANSFER_APPEAR_TIMEOUT = 30
+DEFAULT_LOGGING = {
+    "level": "INFO",
+    "format": "[%(levelname)s|%(name)s|L%(lineno)d] %(asctime)s: %(message)s",
+    "datefmt": "%Y-%m-%dT%H:%M:%S%z",
+    "log_to_file": True,
+    "log_file": "soulseekarr.log",
+    "max_bytes": 1048576,
+    "backup_count": 3,
+}
 
 def env_override(section: str, key: str, value):
     """Override a resolved config value with an env var named "<SECTION>_<KEY>".
@@ -1502,7 +1510,7 @@ def slskd_do_enqueue(username, files, file_dir):
         if isinstance(record, dict) and "filename" in record and "id" in record
     }
     required_names = {file["filename"] for file in files if file.get("required", True)}
-    deadline = time.monotonic() + TRANSFER_APPEAR_TIMEOUT
+    deadline = time.monotonic() + 30 # add additional 30 seconds to wait for slskd to update the download status
 
     while not required_names.issubset(accepted_ids) and time.monotonic() < deadline:
         try:
@@ -1550,33 +1558,38 @@ def acquire_lock_file(path: str):
 
 
 def setup_logging(config: dict, var_dir: str) -> None:
-    """Configure the root logger from the `logging` config section, resetting prior handlers.
-
-    Always logs to stdout, and additionally to a rotating file in `var_dir` if `log_to_file`
-    is enabled.
-    """
+    """Configure console and optional rotating-file logging."""
     from logging.handlers import RotatingFileHandler
 
-    log_config = config.get("logging") or DEFAULT_LOGGING_CONF
+    log_config = DEFAULT_LOGGING | (config.get("logging") or {})
+    handlers: list[logging.Handler] = [
+        logging.StreamHandler(sys.stdout)
+    ]
+    log_file_path = None
 
-    level = log_config.get("level", DEFAULT_LOGGING_CONF["level"])
-    fmt = log_config.get("format", DEFAULT_LOGGING_CONF["format"])
-    datefmt = log_config.get("datefmt", DEFAULT_LOGGING_CONF["datefmt"])
+    if log_config["log_to_file"]:
+        log_file_path = os.path.join(
+            var_dir,
+            log_config["log_file"],
+        )
+        handlers.append(
+            RotatingFileHandler(
+                log_file_path,
+                maxBytes=int(log_config["max_bytes"]),
+                backupCount=int(log_config["backup_count"]),
+            )
+        )
 
-    # force=True drops any handlers from a previous loop cycle so they don't stack up.
-    logging.basicConfig(level=level, format=fmt, datefmt=datefmt, force=True)
+    logging.basicConfig(
+        level=log_config["level"],
+        format=log_config["format"],
+        datefmt=log_config["datefmt"],
+        handlers=handlers,
+        force=True,
+    )
     logging.getLogger("urllib3").setLevel(logging.WARNING)
 
-    log_to_file = bool(log_config.get("log_to_file", True))
-    if log_to_file:
-        log_filename = log_config.get("log_file", "soulseekarr.log")
-        log_file_path = os.path.join(var_dir, log_filename)
-        max_bytes = int(log_config.get("max_bytes", 1048576))
-        backup_count = int(log_config.get("backup_count", 3))
-
-        file_handler = RotatingFileHandler(log_file_path, maxBytes=max_bytes, backupCount=backup_count)
-        file_handler.setFormatter(logging.Formatter(fmt=fmt, datefmt=datefmt))
-        logging.getLogger().addHandler(file_handler)
+    if log_file_path:
         logger.info(f"Logging to file: {log_file_path}")
 
 
