@@ -918,19 +918,36 @@ class GrabbedAlbum:
             return
         self.import_folder = os.path.join(self.cfg.lidarr.download_dir, staging_folder_name)
 
-        try:
-            os.mkdir(self.staging_folder)
-        except FileExistsError:
-            logger.error(f"Refusing to reuse existing staging directory: {self.staging_folder}")
+        source_dirs = {
+            safe_path(self.cfg.slskd.download_dir, file["file_dir"].split("\\")[-1])
+            for file in self.files
+        }
+        if None in source_dirs:
+            logger.error("Refusing to use an invalid slskd source directory")
             self.wanted_album.grab_failed = True
             return
+        staging_folder_created = False
+        if os.path.exists(self.staging_folder):
+            if not os.path.isdir(self.staging_folder) or self.staging_folder not in source_dirs:
+                logger.error(f"Refusing to reuse existing staging directory: {self.staging_folder}")
+                self.wanted_album.grab_failed = True
+                return
+        else:
+            try:
+                os.mkdir(self.staging_folder)
+                staging_folder_created = True
+            except OSError:
+                logger.exception(f"Failed to create staging directory: {self.staging_folder}")
+                self.wanted_album.grab_failed = True
+                return
 
         success, rm_dirs = self.move_album_files()
         if not success:
-            try:
-                os.rmdir(self.staging_folder)
-            except OSError:
-                logger.warning(f"Could not remove temp import directory {self.staging_folder}")
+            if staging_folder_created:
+                try:
+                    os.rmdir(self.staging_folder)
+                except OSError:
+                    logger.warning(f"Could not remove temp import directory {self.staging_folder}")
             self.wanted_album.grab_failed = True
             return
 
