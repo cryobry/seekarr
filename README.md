@@ -50,6 +50,7 @@ cp config.yml "$HOME/.config/soulseekarr/config.yml"
 ### 2. Edit [`config.yml`](config.yml)
 
 **Configuration options are covered in-depth in the [`config.yml`](config.yml) template.**
+`lidarr.import_timeout` controls how long Soulseekarr waits for a Lidarr import command. A timed-out import is treated as pending and is not regrabbed during the current process, because Lidarr may still complete it.
 
 ### 3. Environment Variables
 

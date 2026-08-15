@@ -24,6 +24,9 @@ in this one module. Do not split it into a package unless the user explicitly as
 - `config.yml` is read from disk once, at the top of `main()`, before the `--interval`/`LOOP_INTERVAL`
   loop starts. Config/interval changes require a process restart to take effect — this is
   intentional; do not reintroduce per-iteration reloading.
+- `lidarr.import_timeout` bounds waiting for Lidarr import commands. Albums whose import command
+  times out are held in the in-memory `pending_imports` set and skipped for the rest of the process,
+  because the Lidarr command may still complete.
 - Global module state (`lidarr`, `slskd`, `source_configs`, `folder_cache`, `broken_user`,
   `grabbed_albums`, `failed_import_denylist`, `remaining_albums_by_source`) is initialized once
   before the loop in `main()`, not reset per iteration. `grabbed_albums` persists across

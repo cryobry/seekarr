@@ -8,6 +8,8 @@ lidarr:
   url_base: /
   # Path to slskd downloads inside the Lidarr container
   download_dir: /data/slskd_downloads
+  # Max seconds to wait for Lidarr to finish importing a completed download
+  import_timeout: 3600
 
   # Specifies which and the order of Lidarr wanted lists to process (e.g. [`missing`, `cutoff_unmet`]).
   sources: 

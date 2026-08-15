@@ -83,6 +83,7 @@ class LidarrConfig:
     host_url: str
     url_base: str
     download_dir: str
+    import_timeout: int
     disable_sync: bool
     sources: list[AlbumSource]
     search_type: str
@@ -157,6 +158,7 @@ class AppConfig:
             host_url=env_override("lidarr", "host_url", resolved_lidarr.get("host_url")),
             url_base=str(env_override("lidarr", "url_base", resolved_lidarr.get("url_base", "/"))),
             download_dir=env_override("lidarr", "download_dir", resolved_lidarr.get("download_dir")),
+            import_timeout=int(env_override("lidarr", "import_timeout", resolved_lidarr.get("import_timeout", 3600))),
             disable_sync=bool(env_override("lidarr", "disable_sync", resolved_lidarr.get("disable_sync", False))),
             sources=sources,
             search_type=str(env_override("lidarr", "search_type", resolved_lidarr.get("search_type", "incrementing"))).lower().strip(),
@@ -799,6 +801,13 @@ class WantedAlbums:
                 )
                 continue
 
+            if album.id in pending_imports:
+                logger.info(
+                    f"Skipping pending Lidarr import: {album.artist} - "
+                    f"{album.title} (ID: {album.id})"
+                )
+                continue
+
             if album.cfg.lidarr.disable_sync and album.id in grabbed_albums:
                 logger.info(
                     f"Skipping already grabbed album: {album.artist} - "
@@ -1150,14 +1159,14 @@ class GrabbedAlbum:
         )  # Album all tagged up and in a correctly named folder. This should work more reliably
         logger.info(f"Starting Lidarr import for: {self.title} ID: {command['id']}")
 
-        deadline = time.time() + self.cfg.slskd.stalled_timeout
+        deadline = time.time() + self.cfg.lidarr.import_timeout
         while True:
             current_task = lidarr.get_command(command["id"])
             if current_task["status"] in ("completed", "failed"):
                 break
             if time.time() >= deadline:
                 logger.error(f"Timed out waiting for Lidarr import of {self.artist} - {self.title}")
-                self.wanted_album.grab_failed = True
+                pending_imports.add(self.id)
                 return
             time.sleep(2)
 
@@ -1512,6 +1521,7 @@ def migrate_soularr_ini_config(config_dir: str) -> bool:
             "api_key": get("Lidarr", "api_key"),
             "host_url": get("Lidarr", "host_url"),
             "download_dir": get("Lidarr", "download_dir"),
+            "import_timeout": get_int("Lidarr", "import_timeout", 3600),
             "disable_sync": get_bool("Lidarr", "disable_sync", False),
             "sources": ["missing", "cutoff_unmet"] if search_source == "all" else [search_source],
             "search_type": get("Search Settings", "search_type", "incrementing").lower().strip(),
@@ -1748,7 +1758,7 @@ def filter_queued_albums(albums: WantedAlbums) -> WantedAlbums:
 def main():
     """Parse CLI arguments, resolve configuration, then run Soulseekarr once or on a loop."""
     global lidarr, slskd, source_configs
-    global folder_cache, broken_user, grabbed_albums, failed_import_denylist, remaining_albums_by_source
+    global folder_cache, broken_user, grabbed_albums, failed_import_denylist, pending_imports, remaining_albums_by_source
     # Allow some overrides to be passed to the script
     parser = argparse.ArgumentParser(description="""Soulseekarr reads all of your "wanted" albums/artists from Lidarr and downloads them using Slskd""")
 
@@ -1846,6 +1856,8 @@ def main():
         # Albums that failed Lidarr import, keyed by str(album id). In-memory only (not persisted to
         # disk), so it resets on process restart same as grabbed_albums.
         failed_import_denylist = {}
+        # Albums with an import command that timed out; the command may still complete in Lidarr.
+        pending_imports = set()
         # Albums still to process from the most recent Lidarr fetch, keyed by source. Each run takes
         # one batch from this list; when it is empty, get_wanted_albums() fetches a fresh wanted list.
         remaining_albums_by_source = {}
