@@ -1043,20 +1043,19 @@ class GrabbedAlbum:
                 return False, rm_dirs
         return True, rm_dirs
 
-    def refresh_download_status(self, statuses: dict[tuple[str, int], dict]) -> bool:
-        """Attach the current slskd transfer status from a shared snapshot."""
+    def refresh_download_status(self, statuses: dict[tuple[str, str | int], dict]) -> bool:
+        """Attach transfer statuses from a shared snapshot."""
         ok = True
+
         for file in self.files:
-            try:
-                status = statuses.get((file["username"], file["id"]))
-                if not isinstance(status, dict) or not isinstance(status.get("state"), str) or not status["state"]:
-                    raise ValueError("missing or malformed download status")
-                file["status"] = status
-            except Exception:
-                logger.exception(f"Error getting download status of {file['filename']}")
-                file["status"] = None
-                if file.get("required", True):
-                    ok = False
+            status = statuses.get((file["username"], file["id"]))
+            state = status.get("state") if isinstance(status, dict) else None
+            file["status"] = status if isinstance(state, str) and state else None
+
+            if file["status"] is None and file.get("required", True):
+                logger.warning(f"Missing download status for {file['filename']}")
+                ok = False
+
         return ok
 
     def discard_incomplete_optional_files(self) -> None:
