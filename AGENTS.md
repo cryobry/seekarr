@@ -25,15 +25,16 @@ additional modules unless the user explicitly asks for it.
   loop starts. Config/interval changes require a process restart to take effect — this is
   intentional; do not reintroduce per-iteration reloading.
 - `lidarr.import_timeout` bounds waiting for Lidarr import commands. Albums whose import command
-  times out set their `AlbumState.import_pending` flag and are skipped for the rest of the process,
-  because the Lidarr command may still complete.
+  times out set their `AlbumState.outcome` to `import_pending` and are skipped for the rest of the
+  process, because the Lidarr command may still complete.
 - Global module state (`lidarr`, `slskd`, `source_configs`, `album_states`,
   `remaining_albums_by_source`) is initialized once before the loop in `main()`, not reset per
-  iteration. `album_states` is keyed by Lidarr album ID so `grabbed`, `import_failed`, and
-  `import_pending` survive recreation of a `WantedAlbum` on a later loop iteration. This keeps
-  albums grabbed while `disable_sync` is enabled from being regrabbed. `remaining_albums_by_source`
-  caches unprocessed wanted albums, but each selected batch is rechecked against the current Lidarr
-  queue. `WantedAlbum` owns its current search results, folder cache, and failure state.
+  iteration. `album_states` is keyed by Lidarr album ID so the `AlbumState.outcome` values
+  (`completed`, `import_failed`, and `import_pending`) survive recreation of a `WantedAlbum` on a
+  later loop iteration. Completed imports and albums completed while `disable_sync` is enabled are
+  not reprocessed from stale wanted records. `remaining_albums_by_source` caches unprocessed
+  wanted albums, but each selected batch is rechecked against the current Lidarr queue.
+  `WantedAlbum` owns its current search results, folder cache, and failure state.
 - `GrabbedAlbum` doesn't inherit `Album` or duplicate identity fields (`id`, `artist`, `title`,
   etc.) — it holds a `wanted_album: WantedAlbum` reference and exposes those as properties that
   delegate to it. It owns transfer polling, retry, completion, and import processing; keep

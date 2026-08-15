@@ -64,10 +64,12 @@ AlbumSource = Literal["missing", "cutoff_unmet"]
 
 @dataclass
 class AlbumState:
-    """State shared by every instance representing the same Lidarr album."""
-    grabbed: bool = False
-    import_failed: bool = False
-    import_pending: bool = False
+    """Persistent outcome shared by instances representing the same album."""
+    outcome: Literal[
+        "completed",
+        "import_failed",
+        "import_pending",
+    ] | None = None
 
 
 @dataclass
@@ -253,12 +255,12 @@ class WantedAlbum(Album):
 
     def skip_reason(self) -> str | None:
         """Return why this album should be skipped, or None if it is eligible."""
-        if self.cfg.lidarr.failed_import_denylist and self.state.import_failed:
+        if self.cfg.lidarr.failed_import_denylist and self.state.outcome == "import_failed":
             return "failed import"
-        if self.state.import_pending:
+        if self.state.outcome == "import_pending":
             return "pending Lidarr import"
-        if self.cfg.lidarr.disable_sync and self.state.grabbed:
-            return "already grabbed"
+        if self.state.outcome == "completed":
+            return "already completed"
 
         for word in self.cfg.lidarr.title_blacklist:
             if word and word.lower() in self.title.lower():
@@ -640,9 +642,9 @@ class WantedAlbum(Album):
 
     def add_to_failed_import_denylist(self) -> None:
         """Remember this failed import for the lifetime of the process."""
-        if self.state.import_failed:
+        if self.state.outcome == "import_failed":
             return
-        self.state.import_failed = True
+        self.state.outcome = "import_failed"
         logger.info(f"Added to failed import denylist: {self.artist} - {self.title} (ID: {self.id})")
 
     def choose_release(self, releases):
@@ -954,7 +956,7 @@ class GrabbedAlbum:
 
         if self.cfg.lidarr.disable_sync:
             logger.info(f"Sync disabled. Skipping Lidarr import of {self.artist} - {self.title}")
-            self.wanted_album.state.grabbed = True
+            self.wanted_album.state.outcome = "completed"
             return
 
         logger.info(f"Attempting Lidarr import of {self.artist} - {self.title}")
@@ -1217,7 +1219,7 @@ class GrabbedAlbum:
                 break
             if time.time() >= deadline:
                 logger.error(f"Timed out waiting for Lidarr import of {self.artist} - {self.title}")
-                self.wanted_album.state.import_pending = True
+                self.wanted_album.state.outcome = "import_pending"
                 return
             time.sleep(2)
 
@@ -1225,6 +1227,7 @@ class GrabbedAlbum:
         logger.info(f"{current_task.get('commandName', 'Lidarr command')} {current_task.get('message', '')} from: {path}")
         failed = (current_task.get("status") == "failed" or current_task.get("result") == "unsuccessful")
         if not failed:
+            self.wanted_album.state.outcome = "completed"
             return
 
         self.wanted_album.failure = "Lidarr import failed"
