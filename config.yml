@@ -85,9 +85,10 @@ slskd:
   minimum_peer_upload_speed: 50
   # Minimum match ratio between Lidarr track and Soulseek filename
   minimum_filename_match_ratio: 0.8
-  # Minimum time (seconds) between searches. Set to 0 to disable
-  minimum_search_interval: 5
-  # Delete search after Soulseekarr runs
+  # Minimum time (seconds) between searches (recommended 0.5-5 seconds)
+  # Lower values speed up search queuing, but slskd will only perform two at once
+  minimum_search_interval: 1
+  # Delete a search after grabbing an album
   delete_searches: False
   # Max seconds to wait for stalled downloads to finish
   stalled_timeout: 7200
