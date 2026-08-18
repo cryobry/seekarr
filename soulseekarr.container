@@ -1,6 +1,6 @@
 # systemd container quadlet
 [Unit]
-Description=soulseekarr container
+Description=Soulseekarr container
 Requires=podman.socket
 After=podman.socket
 
@@ -9,7 +9,7 @@ ContainerName=soulseekarr
 Image=docker.io/cryobry/soulseekarr:latest
 Pull=newer
 Volume=%h/.config/soulseekarr:/data:Z
-Volume=%h/downloads/htpc:/downloads:z
+Volume=%h/downloads:/downloads:z
 Environment=LOOP_INTERVAL=300
 Environment=TZ=UTC
 
