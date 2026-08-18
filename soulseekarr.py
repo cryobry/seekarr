@@ -40,6 +40,7 @@ AlbumSource = Literal["missing", "cutoff_unmet"]
 @dataclass
 class AlbumState:
     """State shared by every instance representing the same Lidarr album."""
+    queued: bool = False
     grabbed: bool = False
     import_failed: bool = False
     import_pending: bool = False
@@ -76,6 +77,7 @@ class SlskdConfig:
     download_dir: str
     failed_imports_dir: str
     url_base: str
+    monitor_downloads: bool
     stalled_timeout: int
     remote_queue_timeout: int
     delete_searches: bool
@@ -164,9 +166,16 @@ class AppConfig:
             host_url=env_override("slskd", "host_url", resolved_slskd.get("host_url")),
             download_dir=slskd_download_dir,
             failed_imports_dir=str(
-                env_override("slskd", "failed_imports_dir", resolved_slskd.get("failed_imports_dir") or os.path.join(slskd_download_dir, "failed_imports"))
+                env_override("slskd", "failed_imports_dir", resolved_slskd.get("failed_imports_dir") or os.path.join(slskd_download_dir, ".failed_imports"))
             ),
             url_base=str(env_override("slskd", "url_base", resolved_slskd.get("url_base", "/"))),
+            monitor_downloads=bool(
+                env_override(
+                    "slskd",
+                    "monitor_downloads",
+                    resolved_slskd.get("monitor_downloads", True),
+                )
+            ),
             stalled_timeout=int(env_override("slskd", "stalled_timeout", resolved_slskd.get("stalled_timeout", 3600))),
             remote_queue_timeout=int(env_override("slskd", "remote_queue_timeout", resolved_slskd.get("remote_queue_timeout", 300))),
             delete_searches=bool(env_override("slskd", "delete_searches", resolved_slskd.get("delete_searches", True))),
@@ -250,6 +259,8 @@ class WantedAlbum(Album):
 
     def skip_reason(self) -> str | None:
         """Return why this album should be skipped, or None if it is eligible."""
+        if self.state.queued:
+            return "already queued"
         if self.cfg.lidarr.failed_import_denylist and self.state.import_failed:
             return "failed import"
         if self.state.import_pending:
@@ -858,14 +869,21 @@ class WantedAlbums:
         remaining_albums_by_source[cfg.source] = remaining_albums
         return albums_to_process
 
-    def grab_most_wanted(self) -> int:
-        """Search, download, and import every album in this collection."""
+    def grab_most_wanted(self, monitor_downloads: bool = True) -> int:
+        """Search and enqueue every album, optionally waiting for completion."""
         downloads = self.search_and_queue()
 
         logger.info(f"Total downloads added: {len(downloads)}")
         for album in downloads:
             logger.info(f"Album: {album.title} Artist: {album.artist}")
-        downloads.monitor_downloads()
+        if monitor_downloads:
+            downloads.monitor_downloads()
+        else:
+            for download in downloads:
+                download.wanted_album.state.queued = True
+            logger.info(
+                "Download monitoring disabled; continuing to the next Lidarr batch"
+            )
 
         failures = [album for album in self.albums if album.failure]
         logger.info(f"Failed albums: {len(failures)}")
@@ -1657,7 +1675,9 @@ def main():
                 wanted_albums.shuffle()
 
             try:
-                total_failed = wanted_albums.grab_most_wanted()
+                total_failed = wanted_albums.grab_most_wanted(
+                    monitor_downloads=cfg.slskd.monitor_downloads,
+                )
                 if total_failed == 0:
                     logger.info("Soulseekarr finished.")
                 else:
