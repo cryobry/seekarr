@@ -6,7 +6,7 @@
 
 Soulseekarr reads Lidarr's _**Wanted**_ and/or _**Cutoff Unmet**_ album lists and downloads them with Slskd using [pyarr](https://github.com/totaldebug/pyarr) and [slskd-api](https://github.com/bigoulours/slskd-python-api). As downloads complete in Slskd, Soulseekarr informs Lidarr to import the files.
 
-Alternatively, Soulseekarr can operate in various standalone modes using the options described in [`config.yml`](config.yml).
+Alternatively, Soulseekarr can operate in various standalone modes using its search, monitoring, and post-processing options described in [`config.yml`](config.yml).
 
 ## Prerequisites
 
@@ -154,6 +154,44 @@ logging:
   ```
 
 See the [Python logging documentation](https://docs.python.org/3/library/logging.html) for advanced logging usage.
+
+## Soulseekarr vs. Soularr
+
+Soulseekarr began as a fork of [mrusse/soularr](https://github.com/mrusse/soularr), but most of its search, matching, configuration, state-management, download-monitoring, and Lidarr-integration code has been rewritten.
+
+### Improvements
+
+#### Per-list YAML configuration
+  
+The `missing` and `cutoff_unmet`Lidarr lists can override the default Lidarr and slskd settings independently. Different lists can therefore use different formats, regions, sorting methods, search intervals, matching thresholds, and download behavior.
+
+#### Flexible sorting and randomization
+
+Wanted albums can follow Lidarr sorting, be shuffled within each source list, or be shuffled together across all enabled lists.
+
+#### Fewer Lidarr API requests
+
+Soulseekarr retrieves wanted records in larger paginated batches, retains the remaining albums between processing cycles, deduplicates albums across lists, and reuses album and release information where possible.
+
+#### Faster searching
+  
+Search requests are submitted continuously at the configured `minimum_search_interval` instead of waiting for each search to finish before starting the next one. Multiple searches can remain queued in slskd while its available search slots stay occupied. Search states are checked in bulk, and completed searches are collected and removed promptly.
+
+#### Better search matching
+
+Search supports fuzzy matching so bonus albums and other similar matches aren't skipped.
+
+#### Improved queue control
+
+Configurable chunk sizes determine how many albums are processed per cycle. Soulseekarr can filter unwanted files, enforce file-count safety limits, handle multi-disc releases, require all expected tracks to be accepted, and continue processing new Lidarr batches when download monitoring is disabled.
+
+#### Album-aware download handling
+
+Downloads are monitored as complete albums rather than unrelated transfers. Soulseekarr can detect missing statuses, stalled downloads, remote-queue timeouts, rejected transfers, hard failures, incomplete optional files, and partially accepted enqueue requests.
+
+#### Completed-download processing
+
+Successful albums can be renamed, consolidated from multiple source directories, tagged with album and disc metadata, and submitted to Lidarr for import. Failed imports can be moved aside and temporarily denylisted, while completed slskd transfer records can be retained or removed according to configuration.
 
 ## Additional Info
 
