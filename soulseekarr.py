@@ -288,24 +288,7 @@ class WantedAlbum:
     state: AlbumState = field(init=False, repr=False)
 
     _states: ClassVar[dict[int, AlbumState]] = {}
-    MAX_CANDIDATES = 10
-    MULTI_SEARCH_LIMIT = 100
-    _TRACK_PREFIX: ClassVar[re.Pattern[str]] = re.compile(
-        r"^\s*(?:(?:cd|disc)\s*\d{1,2}\s*[-.]?\s*|\d{1,2}\s*[-.]\s*|track\s+|a)?"
-        r"(?P<track>\d{1,2})(?:\s*[-.)_]\s*|\s+|_+)",
-        re.IGNORECASE,
-    )
-    _TRAILING_METADATA: ClassVar[re.Pattern[str]] = re.compile(
-        r"\s+(?:(?:19|20)\d{2}\s+)?"
-        r"(?:anniversary|deluxe|expanded|reissue(?:d)?|remaster(?:ed)?)"
-        r"(?:\s+edition)?(?:\s+(?:19|20)\d{2})?$"
-    )
     failure: str | None = field(default=None, init=False)
-    search_id: str | None = field(default=None, init=False, repr=False)
-    search_deadline: float | None = field(default=None, init=False, repr=False)
-    search_results: dict = field(default_factory=dict, init=False, repr=False)
-    folder_cache: dict = field(default_factory=dict, init=False, repr=False)
-    match_cache: dict = field(default_factory=dict, init=False, repr=False)
 
     def __post_init__(self) -> None:
         self.state = self._states.setdefault(self.id, AlbumState())
@@ -339,11 +322,47 @@ class WantedAlbum:
 
         return None
 
+
+@dataclass
+class AlbumSearch:
+    """Search state and matching caches for one wanted album."""
+
+    MAX_CANDIDATES = 10
+    MULTI_SEARCH_LIMIT = 100
+    _TRACK_PREFIX: ClassVar[re.Pattern[str]] = re.compile(
+        r"^\s*(?:(?:cd|disc)\s*\d{1,2}\s*[-.]?\s*|\d{1,2}\s*[-.]\s*|track\s+|a)?"
+        r"(?P<track>\d{1,2})(?:\s*[-.)_]\s*|\s+|_+)",
+        re.IGNORECASE,
+    )
+    _TRAILING_METADATA: ClassVar[re.Pattern[str]] = re.compile(
+        r"\s+(?:(?:19|20)\d{2}\s+)?"
+        r"(?:anniversary|deluxe|expanded|reissue(?:d)?|remaster(?:ed)?)"
+        r"(?:\s+edition)?(?:\s+(?:19|20)\d{2})?$"
+    )
+
+    album: WantedAlbum
+    id: str | None = None
+    deadline: float = 0.0
+    results: dict = field(default_factory=dict)
+    folder_cache: dict = field(default_factory=dict)
+    match_cache: dict = field(default_factory=dict)
+
+    @property
+    def artist(self) -> str:
+        return self.album.artist
+
+    @property
+    def title(self) -> str:
+        return self.album.title
+
+    @property
+    def cfg(self) -> AppConfig:
+        return self.album.cfg
+
     def start_search(self) -> bool:
         """Start this album's slskd search without waiting for results."""
-        self.failure = None
-        self.search_id = None
-        self.search_deadline = None
+        self.album.failure = None
+        self.id = None
 
         include_artist = len(self.title) == 1 or self.cfg.slskd.album_prepend_artist
         query = f"{self.artist} {self.title}" if include_artist else self.title
@@ -358,13 +377,14 @@ class WantedAlbum:
             logger.info(f"Filtered search query: '{original_query}' -> '{query}'")
         if not query:
             logger.warning(f"Skipping {self.artist} - {self.title}: empty search query")
-            self.failure = "Search failed"
+            self.album.failure = "Search failed"
             return False
 
         logger.info(f"Searching for '{self.cfg.source}' album: {self.artist} - {self.title}")
         logger.debug(f"Search query: '{query}'")
 
         search_timeout = max(1, self.cfg.slskd.search_timeout)
+        self.deadline = time.monotonic() + search_timeout + 5
 
         try:
             search = slskd.searches.search_text(
@@ -374,22 +394,22 @@ class WantedAlbum:
                 maximumPeerQueueLength=self.cfg.slskd.maximum_peer_queue,
                 minimumPeerUploadSpeed=self.cfg.slskd.minimum_peer_upload_speed,
             )
-            self.search_id = search["id"]
+            self.id = search["id"]
             return True
 
         except Exception:
-            self.failure = "Search failed"
+            self.album.failure = "Search failed"
             logger.exception(f"Failed to start search via SLSKD: {query}")
             return False
 
     def search_finished(self, state: dict | None = None) -> bool:
         """Return whether the search is complete, stopping overdue active searches."""
-        if self.search_id is None:
+        if self.id is None:
             return True
 
         if state is None:
             try:
-                state = slskd.searches.state(self.search_id, False)
+                state = slskd.searches.state(self.id, False)
             except Exception:
                 logger.exception(f"Failed to check SLSKD search for {self.artist} - {self.title}")
                 return False
@@ -401,39 +421,37 @@ class WantedAlbum:
             return False
 
         now = time.monotonic()
-        if self.search_deadline is None:
-            self.search_deadline = now + max(1, self.cfg.slskd.search_timeout) + 5
-        elif now >= self.search_deadline:
+        if now >= self.deadline:
             logger.warning(
                 f"SLSKD search for {self.artist} - {self.title} did not complete "
                 f"within its {self.cfg.slskd.search_timeout}s timeout + 5s grace; stopping it"
             )
             try:
-                if not slskd.searches.stop(self.search_id):
-                    logger.warning(f"SLSKD did not stop search {self.search_id}")
+                if not slskd.searches.stop(self.id):
+                    logger.warning(f"SLSKD did not stop search {self.id}")
             except Exception:
-                logger.warning(f"Failed to stop SLSKD search {self.search_id}", exc_info=True)
-            self.search_deadline = now + 5
+                logger.warning(f"Failed to stop SLSKD search {self.id}", exc_info=True)
+            self.deadline = now + 5
 
         return False
 
     def collect_search(self) -> bool:
         """Collect this search's results, cache them, and remove the search."""
-        search_id = self.search_id
+        search_id = self.id
         try:
             responses = slskd.searches.search_responses(search_id)
             logger.info(f"Search for {self.artist} - {self.title} returned {len(responses)} results")
             if not responses:
-                self.failure = "Search failed"
+                self.album.failure = "Search failed"
                 return False
 
-            self.search_results.clear()
+            self.results.clear()
             for result in responses:
                 username = result["username"]
                 if username in self.cfg.slskd.ignored_users:
                     logger.debug(f"Skipping ignored user: {username}")
                     continue
-                user_results = self.search_results.setdefault(username, {})
+                user_results = self.results.setdefault(username, {})
                 logger.debug(f"Caching and truncating results for user: {username}")
                 peer = {
                     "hasFreeUploadSlot": bool(result.get("hasFreeUploadSlot", False)),
@@ -449,12 +467,12 @@ class WantedAlbum:
                                 directories.append({"file_dir": file_dir, **peer})
             return True
         except Exception:
-            self.failure = "Search failed"
+            self.album.failure = "Search failed"
             logger.exception(f"Failed to collect SLSKD search for {self.artist} - {self.title}")
             return False
         finally:
-            self.search_id = None
-            self.search_deadline = None
+            self.id = None
+            self.deadline = 0.0
 
             if search_id and self.cfg.slskd.remove_searches:
                 try:
@@ -465,26 +483,21 @@ class WantedAlbum:
 
     def queue_download(self) -> AlbumDownload | None:
         """Enqueue the best match from this album's cached search results."""
-        try:
-            if not self.search_results:
-                self.failure = "Search failed"
-                return None
-
-            download = AlbumDownload(album=self, candidates=deque(self.discover_candidates()))
-            if download.enqueue_next():
-                return download
-            if self.failure is None:
-                self.failure = "No matching download"
+        if not self.results:
+            self.album.failure = "Search failed"
             return None
-        finally:
-            self.search_results.clear()
-            self.folder_cache.clear()
-            self.match_cache.clear()
+
+        download = AlbumDownload(album=self.album, candidates=deque(self.discover_candidates()))
+        if download.enqueue_next():
+            return download
+        if self.album.failure is None:
+            self.album.failure = "No matching download"
+        return None
 
     def discover_candidates(self) -> list[DownloadCandidate]:
         """Discover and rank complete candidates without starting downloads."""
-        results = self.search_results
-        releases = self.ordered_releases(lidarr.get_album(self.id)["releases"])
+        results = self.results
+        releases = self.ordered_releases(lidarr.get_album(self.album.id)["releases"])
         tracks_by_release = {}
         candidates = {}
 
@@ -497,8 +510,8 @@ class WantedAlbum:
                 release_id = release["id"]
                 if release_id not in tracks_by_release:
                     tracks_by_release[release_id] = lidarr.get_tracks(
-                        artistId=self.artistId,
-                        albumId=self.id,
+                        artistId=self.album.artistId,
+                        albumId=self.album.id,
                         albumReleaseId=release_id,
                     )
                 tracks = tracks_by_release[release_id]
@@ -971,14 +984,15 @@ class WantedQueue(list[WantedAlbum]):
     def search_and_queue(self) -> DownloadBatch:
         """Keep two slskd searches pending and enqueue completed results."""
         remaining = deque(self)
-        pending: list[WantedAlbum] = []
+        pending: list[AlbumSearch] = []
         downloads = DownloadBatch()
 
         def fill_search_slots() -> None:
             while remaining and len(pending) < self.SEARCH_SLOTS:
                 album = remaining.popleft()
-                if album.start_search():
-                    pending.append(album)
+                search = AlbumSearch(album)
+                if search.start_search():
+                    pending.append(search)
 
         fill_search_slots()
 
@@ -991,19 +1005,19 @@ class WantedQueue(list[WantedAlbum]):
                 continue
 
             completed = []
-            for pending_album in pending.copy():
-                if not pending_album.search_finished(states.get(pending_album.search_id)):
+            for search in pending.copy():
+                if not search.search_finished(states.get(search.id)):
                     continue
 
-                pending.remove(pending_album)
-                if pending_album.collect_search():
-                    completed.append(pending_album)
+                pending.remove(search)
+                if search.collect_search():
+                    completed.append(search)
 
             # Refill freed slskd slots before potentially expensive matching and enqueueing.
             fill_search_slots()
 
-            for album in completed:
-                download = album.queue_download()
+            for search in completed:
+                download = search.queue_download()
                 if download:
                     downloads.append(download)
 
@@ -1070,7 +1084,7 @@ class WantedQueue(list[WantedAlbum]):
 class AlbumDownload:
     """An album's enqueued downloads, tracked from enqueue through Lidarr import.
 
-    Built once by WantedAlbum.queue_download(), then mutated in place by monitor_downloads() and
+    Built once by AlbumSearch.queue_download(), then mutated in place by monitor_downloads() and
     process_completed_album()/trigger_lidarr_import() as the download/import progresses.
     Identity fields (id, artist, title, ...) are read from `album` instead of being
     duplicated here.
@@ -1081,6 +1095,7 @@ class AlbumDownload:
     album: WantedAlbum
     files: list[dict] = field(default_factory=list)
     candidates: deque[DownloadCandidate] = field(default_factory=deque)
+    candidate: DownloadCandidate | None = None
     count_start: float = field(default_factory=time.monotonic)
 
     @property
@@ -1099,12 +1114,15 @@ class AlbumDownload:
     def cfg(self) -> AppConfig:
         return self.album.cfg
 
-    def enqueue_next(self) -> bool:
-        """Enqueue the next ranked candidate, retaining later candidates for fallback."""
+    def enqueue_next(self) -> DownloadCandidate | None:
+        """Enqueue and return the next available candidate."""
+        self.candidate = None
+
         while self.candidates:
-            candidate = self.candidates[0]
+            candidate = self.candidates.popleft()
             downloads, cleanup_ok = self.enqueue_candidate(candidate)
             if not cleanup_ok:
+                self.candidate = candidate
                 self.files = downloads or []
                 self.candidates.clear()
                 self.album.failure = "Failed to clean up failed enqueue"
@@ -1112,21 +1130,21 @@ class AlbumDownload:
                     f"Refusing further fallback for {self.artist} - {self.title}: "
                     "a partial candidate could not be fully removed"
                 )
-                return False
+                return None
             if not downloads:
                 logger.info(
                     f"Stored candidate unavailable for {self.artist} - {self.title}; "
                     "continuing to the next candidate"
                 )
-                self.candidates.popleft()
                 continue
 
             self.files = downloads
+            self.candidate = candidate
             self.count_start = time.monotonic()
             logger.info(f"Selected candidate for {self.artist} - {self.title}: {candidate.summary}")
-            return True
+            return candidate
 
-        return False
+        return None
 
     def enqueue_candidate(self, candidate: DownloadCandidate) -> tuple[list[dict] | None, bool]:
         """Enqueue every source in a candidate, removing partial attempts."""
@@ -1386,7 +1404,7 @@ class AlbumDownload:
 
     def try_next_candidate(self, reason: str) -> bool:
         """Replace the failed album attempt, returning True when no candidate remains."""
-        failed_location = self.candidates.popleft().location if self.candidates else "unknown source"
+        failed_location = self.candidate.location if self.candidate else "unknown source"
 
         if not self.cancel_and_delete(self.files):
             self.candidates.clear()
@@ -1395,8 +1413,7 @@ class AlbumDownload:
             logger.error("Refusing fallback for %s - %s: candidate removal failed; transfers=%s", self.artist, self.title, active_transfers)
             return True
 
-        if self.enqueue_next():
-            candidate = self.candidates[0]
+        if candidate := self.enqueue_next():
             logger.info(
                 f"Replaced failed candidate ({failed_location}) for {self.artist} - {self.title} "
                 f"after {reason}: {candidate.summary}"
