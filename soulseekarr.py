@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 from __future__ import annotations
 import argparse
-from typing import Literal, Iterator, Iterable, Self
+from typing import ClassVar, Literal, Iterator, Iterable, Self
 import random
 import re
 import os
@@ -10,6 +10,7 @@ import time
 import shutil
 import logging
 import fcntl
+import unicodedata
 from urllib.parse import urljoin
 from dataclasses import dataclass, field
 import music_tag
@@ -35,6 +36,75 @@ DEFAULT_LOGGING = {
 }
 
 AlbumSource = Literal["missing", "cutoff_unmet"]
+
+
+def _maximum_weight_assignment(score_matrix: list[list[float]], minimum_score: float) -> list[int] | None:
+    """Return the best column for each row, or None when no valid assignment exists."""
+    row_count = len(score_matrix)
+    if not row_count:
+        return []
+    column_count = len(score_matrix[0])
+    if row_count > column_count or any(len(row) != column_count for row in score_matrix):
+        return None
+
+    costs = [
+        [1.0 - score if score >= minimum_score else 2.0 for score in row]
+        for row in score_matrix
+    ]
+    row_potentials = [0.0] * (row_count + 1)
+    column_potentials = [0.0] * (column_count + 1)
+    matching = [0] * (column_count + 1)
+    previous_column = [0] * (column_count + 1)
+
+    for row_number in range(1, row_count + 1):
+        matching[0] = row_number
+        current_column = 0
+        minimum_cost = [float("inf")] * (column_count + 1)
+        used_columns = [False] * (column_count + 1)
+
+        while True:
+            used_columns[current_column] = True
+            current_row = matching[current_column]
+            delta = float("inf")
+            next_column = 0
+            for column_number in range(1, column_count + 1):
+                if used_columns[column_number]:
+                    continue
+                cost = costs[current_row - 1][column_number - 1]
+                reduced_cost = cost - row_potentials[current_row] - column_potentials[column_number]
+                if reduced_cost < minimum_cost[column_number]:
+                    minimum_cost[column_number] = reduced_cost
+                    previous_column[column_number] = current_column
+                if minimum_cost[column_number] < delta:
+                    delta = minimum_cost[column_number]
+                    next_column = column_number
+
+            for column_number in range(column_count + 1):
+                if used_columns[column_number]:
+                    row_potentials[matching[column_number]] += delta
+                    column_potentials[column_number] -= delta
+                else:
+                    minimum_cost[column_number] -= delta
+
+            current_column = next_column
+            if matching[current_column] == 0:
+                break
+
+        while True:
+            prior_column = previous_column[current_column]
+            matching[current_column] = matching[prior_column]
+            current_column = prior_column
+            if current_column == 0:
+                break
+
+    assignment = [0] * row_count
+    for column_number in range(1, column_count + 1):
+        if matching[column_number]:
+            assignment[matching[column_number] - 1] = column_number - 1
+
+    if any(score_matrix[row][column] < minimum_score for row, column in enumerate(assignment)):
+        return None
+    return assignment
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,11 +156,11 @@ class DownloadCandidate:
     def sort_key(self) -> tuple:
         return (
             self.filetype_rank,
-            self.release_rank,
             -self.match_score,
             not self.has_free_upload_slot,
             -self.upload_speed,
             self.queue_length,
+            self.release_rank,
         )
 
     @property
@@ -151,7 +221,7 @@ class SlskdConfig:
     monitor_downloads: bool
     stalled_timeout: int
     remote_queue_timeout: int
-    delete_searches: bool
+    remove_searches: bool
     remove_completed_downloads: bool
     requeue_failed_downloads: bool
     timeout: int
@@ -241,7 +311,7 @@ class AppConfig:
             monitor_downloads=bool(setting("slskd", "monitor_downloads", True)),
             stalled_timeout=int(setting("slskd", "stalled_timeout", 3600)),
             remote_queue_timeout=int(setting("slskd", "remote_queue_timeout", 300)),
-            delete_searches=bool(setting("slskd", "delete_searches", True)),
+            remove_searches=bool(setting("slskd", "remove_searches", True)),
             remove_completed_downloads=bool(setting("slskd", "remove_completed_downloads", True)),
             requeue_failed_downloads=bool(setting("slskd", "requeue_failed_downloads", True)),
             timeout=int(setting("slskd", "timeout", 10)),
@@ -280,18 +350,13 @@ class Album:
     artist: str
     title: str
     year: str
-    source: AlbumSource
-    cfg: AppConfig = field(init=False)
+    cfg: AppConfig = field(repr=False)
     state: AlbumState = field(init=False, repr=False)
 
-    def __post_init__(self) -> None:
-        try:
-            self.cfg = source_configs[self.source]
-        except KeyError:
-            raise ValueError(f"Unknown source {self.source!r} "
-                             f"for album {self.artist} - {self.title}") from None
+    _states: ClassVar[dict[int, AlbumState]] = {}
 
-        self.state = album_states.setdefault(self.id, AlbumState())
+    def __post_init__(self) -> None:
+        self.state = self._states.setdefault(self.id, AlbumState())
 
 
 @dataclass
@@ -313,7 +378,7 @@ class WantedAlbum(Album):
     match_cache: dict = field(default_factory=dict, init=False, repr=False)
 
     @classmethod
-    def prune_wanted_record(cls, raw: dict, source: AlbumSource) -> "WantedAlbum":
+    def prune_wanted_record(cls, raw: dict, cfg: AppConfig) -> "WantedAlbum":
         """Build a wanted album from the fields used by Soulseekarr."""
         return cls(
             id=raw["id"],
@@ -321,7 +386,7 @@ class WantedAlbum(Album):
             artist=raw["artist"]["artistName"],
             title=raw["title"],
             year=raw["releaseDate"][0:4],
-            source=source,
+            cfg=cfg,
         )
 
     def skip_reason(self) -> str | None:
@@ -363,7 +428,7 @@ class WantedAlbum(Album):
             self.failure = "Search failed"
             return False
 
-        logger.info(f"Searching for '{self.source}' album: {self.artist} - {self.title}")
+        logger.info(f"Searching for '{self.cfg.source}' album: {self.artist} - {self.title}")
         logger.debug(f"Search query: '{query}'")
 
         timeout = max(1, self.cfg.slskd.timeout)
@@ -448,7 +513,7 @@ class WantedAlbum(Album):
             self.search_id = None
             self.search_deadline = None
 
-            if search_id and self.cfg.slskd.delete_searches:
+            if search_id and self.cfg.slskd.remove_searches:
                 try:
                     if not slskd.searches.delete(search_id):
                         logger.warning(f"SLSKD did not delete search {search_id}")
@@ -486,8 +551,7 @@ class WantedAlbum(Album):
                 return GrabbedAlbum(
                     wanted_album=self,
                     files=downloads,
-                    candidate=candidate,
-                    fallback_candidates=deque(candidates[rank:]),
+                    candidates=deque(candidates[rank - 1:]),
                 )
 
         return None
@@ -659,7 +723,12 @@ class WantedAlbum(Album):
 
     def match_directory(self, tracks, filetype, file_dir, username):
         """Return a complete, reasonably sized match for one directory."""
-        match_key = (username, file_dir, filetype, tuple(track["title"] for track in tracks))
+        match_key = (
+            username,
+            file_dir,
+            filetype,
+            tuple((track["title"], track.get("trackNumber"), track.get("mediumNumber")) for track in tracks),
+        )
         if match_key in self.match_cache:
             return self.match_cache[match_key]
 
@@ -746,56 +815,179 @@ class WantedAlbum(Album):
         only be assigned to one track.
         """
 
-        available_files = [
-            (slskd_track, self._prepare_filename(slskd_track["filename"]))
-            for slskd_track in slskd_tracks
-        ]
-        matched_files = []
-        total_match = 0.0
+        if not lidarr_tracks:
+            return None
+
+        available_files = sorted(
+            (
+                (
+                    slskd_track,
+                    self._prepare_filename(slskd_track["filename"]),
+                )
+                for slskd_track in slskd_tracks
+            ),
+            key=lambda entry: (entry[1][0], str(entry[0]["filename"]).casefold()),
+        )
         filetype_ext = filetype.split(" ")[0]
 
-        for lidarr_track in lidarr_tracks:
-            lidarr_filename = lidarr_track["title"] + "." + filetype_ext
-            best_match = 0.0
-            best_file = None
-            best_entry = None
+        expected_prefix = f"{self.artist} {self.title}"
+        score_matrix = [
+            [
+                self._filename_match_score_parts(
+                    expected_prefix,
+                    f"{track['title']}.{filetype_ext}",
+                    candidate_parts,
+                    self._parse_track_number(track.get("trackNumber")),
+                )
+                for _, candidate_parts in available_files
+            ]
+            for track in lidarr_tracks
+        ]
+        assignment = _maximum_weight_assignment(
+            score_matrix,
+            self.cfg.slskd.minimum_match_ratio,
+        )
+        if assignment is None:
+            for track, scores in zip(lidarr_tracks, score_matrix):
+                if scores:
+                    best_index = max(range(len(scores)), key=lambda index: scores[index])
+                    best_filename = available_files[best_index][0]["filename"]
+                    best_score = scores[best_index]
+                else:
+                    best_filename = "<none>"
+                    best_score = 0.0
+                logger.debug(
+                    f"No complete one-to-one assignment for {self.artist} - {self.title}; "
+                    f"unmatched Lidarr track {track['title']!r}: best candidate "
+                    f"{best_filename!r} scored {best_score:.3f}"
+                )
+            return None
 
-            for slskd_track, candidate_parts in available_files:
-                ratio = self._filename_match_score_parts(self.title, lidarr_filename, candidate_parts)
-                if ratio > best_match:
-                    best_match = ratio
-                    best_file = slskd_track
-                    best_entry = (slskd_track, candidate_parts)
-                    if best_match == 1.0:
-                        break
-
-            if best_entry is None or best_match < self.cfg.slskd.minimum_match_ratio:
-                return None
-            available_files.remove(best_entry)
-            matched_files.append(best_file)
-            total_match += best_match
-
-        if matched_files:
-            return matched_files, total_match / len(matched_files)
-        return None
+        matched_files = [available_files[column][0] for column in assignment]
+        assigned_scores = [score_matrix[row][column] for row, column in enumerate(assignment)]
+        mean_score = sum(assigned_scores) / len(assigned_scores)
+        minimum_score = min(assigned_scores)
+        album_score = 0.75 * mean_score + 0.25 * minimum_score
+        logger.debug(
+            f"Matched {self.artist} - {self.title}: minimum={minimum_score:.3f}, "
+            f"mean={mean_score:.3f}, album={album_score:.3f}"
+        )
+        return matched_files, album_score
 
     @staticmethod
     def _prepare_filename(candidate):
-        return candidate, candidate.split(" "), candidate.split("_")
+        basename = re.split(r"[\\/]", str(candidate))[-1]
+        stem = os.path.splitext(basename)[0]
+        normalized = WantedAlbum._normalize_text(stem)
+        prefix_match = None
+        track_number = None
+        disc_number = None
+
+        for pattern, groups in (
+            (r"^\s*cd\s*(\d{1,2})\s+(\d{1,3})(?:\s*[-.]\s*|\s+)", (2, 1)),
+            (r"^\s*disc\s*(\d{1,2})\s*[-.]\s*(\d{1,3})(?:\s*[-.]\s*|\s+)", (2, 1)),
+            (r"^\s*(\d{1,2})\s*[-.]\s*(\d{1,3})(?:\s*[-.]\s*|\s+)", (2, 1)),
+            (r"^\s*(\d{1,2})\s*(?:-\s*|\.\s+)", (1, None)),
+            (r"^\s*a(\d{1,3})\s*[-.]\s*", (1, None)),
+        ):
+            prefix_match = re.match(pattern, stem, re.IGNORECASE)
+            if prefix_match:
+                track_number = int(prefix_match.group(groups[0]))
+                if groups[1] is not None:
+                    disc_number = int(prefix_match.group(groups[1]))
+                break
+
+        without_prefix = stem[prefix_match.end():] if prefix_match else stem
+        return (
+            normalized,
+            WantedAlbum._normalize_text(without_prefix),
+            track_number,
+            disc_number,
+        )
 
     @staticmethod
-    def _filename_match_score_parts(title, filename, candidate_parts) -> float:
-        candidate, space_parts, underscore_parts = candidate_parts
+    def _normalize_text(value):
+        decomposed = unicodedata.normalize("NFKD", str(value))
+        without_marks = "".join(char for char in decomposed if not unicodedata.combining(char))
+        without_apostrophes = re.sub(r"['\u0060\u00b4\u2018\u2019\u02bc]", "", without_marks)
+        without_apostrophes = without_apostrophes.replace("&", " and ")
+        return re.sub(r"[\W_]+", " ", without_apostrophes.casefold(), flags=re.UNICODE).strip()
+
+    @staticmethod
+    def _parse_track_number(value):
+        if isinstance(value, bool) or value is None:
+            return None
+        if isinstance(value, int):
+            return value
+        if isinstance(value, str) and re.fullmatch(r"\s*\d+\s*", value):
+            return int(value)
+        return None
+
+    @staticmethod
+    def _harmless_trailing_tokens(tokens):
+        harmless = {
+            "anniversary",
+            "bonus",
+            "clean",
+            "deluxe",
+            "digital",
+            "edition",
+            "expanded",
+            "explicit",
+            "mono",
+            "reissue",
+            "reissued",
+            "remaster",
+            "remastered",
+            "stereo",
+            "version",
+        }
+        return bool(tokens) and all(
+            token in harmless or re.fullmatch(r"(?:19|20)\d{2}", token) for token in tokens
+        )
+
+    @staticmethod
+    def _score_variant(expected, candidate):
+        direct_score = fuzz.ratio(expected, candidate) / 100
+        token_sort_score = fuzz.token_sort_ratio(expected, candidate) / 100
+        return max(direct_score, min(token_sort_score, direct_score + 0.08))
+
+    @staticmethod
+    def _filename_match_score_parts(title, filename, candidate_parts, expected_track_number=None) -> float:
+        candidate, without_prefix, candidate_track_number, _ = candidate_parts
+        expected_filename = WantedAlbum._prepare_filename(filename)[1]
+        expected_prefix = WantedAlbum._normalize_text(title)
+        expected_variants = [expected_filename]
+        if expected_prefix:
+            expected_variants.append(f"{expected_prefix} {expected_filename}")
+
         scores = []
-        for expected in (filename, f"{title} {filename}"):
-            word_count = len(expected.split())
-            variants = (
-                candidate,
-                " ".join(space_parts[-word_count:]),
-                " ".join(underscore_parts[-word_count:]),
-            )
-            scores.extend(fuzz.ratio(expected, variant) / 100 for variant in variants)
-        return max(scores)
+        candidate_variants = (candidate, without_prefix)
+        for expected in expected_variants:
+            if not expected:
+                continue
+            expected_tokens = expected.split()
+            for candidate_variant in candidate_variants:
+                scores.append(WantedAlbum._score_variant(expected, candidate_variant))
+                candidate_tokens = candidate_variant.split()
+                if len(expected_tokens) < 2 or len(candidate_tokens) < len(expected_tokens):
+                    continue
+                trailing = " ".join(candidate_tokens[-len(expected_tokens):])
+                scores.append(WantedAlbum._score_variant(expected, trailing))
+                for index in range(len(candidate_tokens) - len(expected_tokens) + 1):
+                    if candidate_tokens[index:index + len(expected_tokens)] != expected_tokens:
+                        continue
+                    suffix = candidate_tokens[index + len(expected_tokens):]
+                    if WantedAlbum._harmless_trailing_tokens(suffix):
+                        scores.append(0.96)
+
+        score = max(scores, default=0.0)
+        if expected_track_number is not None and candidate_track_number is not None:
+            if expected_track_number == candidate_track_number:
+                score += 0.03
+            else:
+                score -= 0.04
+        return max(0.0, min(1.0, score))
 
     @staticmethod
     def filename_match_score(title, filename, candidate) -> float:
@@ -934,7 +1126,7 @@ class WantedAlbums:
         unique_albums: dict[int, WantedAlbum] = {}
         for album in self.albums:
             current = unique_albums.get(album.id)
-            if current is None or album.source == "cutoff_unmet":
+            if current is None or album.cfg.source == "cutoff_unmet":
                 unique_albums[album.id] = album
         return type(self)(albums=list(unique_albums.values()))
 
@@ -951,12 +1143,9 @@ class WantedAlbums:
 
         return type(self)(albums=filtered)
 
-    @classmethod
-    def get_wanted(cls, cfg: AppConfig) -> Self:
+    def next_batch(self, cfg: AppConfig) -> Self:
         """Return the next batch of eligible wanted albums for this source."""
-        remaining_albums = remaining_albums_by_source.get(cfg.source, cls())
-
-        if not remaining_albums:
+        if not self:
             wanted_kwargs = {
                 "missing": cfg.source == "missing",
                 "page_size": 250,
@@ -967,7 +1156,7 @@ class WantedAlbums:
                 wanted_page = lidarr.get_wanted(page=1, **wanted_kwargs)
             except PyarrError as ex:
                 logger.error(f"Failed to get wanted records: {ex}")
-                return cls()
+                return type(self)()
 
             raw_albums = list(wanted_page["records"])
             total_albums = wanted_page["totalRecords"]
@@ -987,16 +1176,15 @@ class WantedAlbums:
                 raw_albums.extend(page_records)
                 page += 1
 
-            remaining_albums = cls(albums=[WantedAlbum.prune_wanted_record(raw, cfg.source) for raw in raw_albums])
+            self.albums = [WantedAlbum.prune_wanted_record(raw, cfg) for raw in raw_albums]
 
             if cfg.lidarr.search_type == "shuffle" and not cfg.lidarr.shuffle_all:
                 logger.info(f"search_type: shuffle (shuffling '{cfg.source}' albums)")
-                remaining_albums.shuffle()
+                self.shuffle()
 
-        remaining_albums = remaining_albums.filter_queued().filter_eligible()
-        albums_to_process = remaining_albums.take(max(1, cfg.lidarr.chunk_size))
-        remaining_albums_by_source[cfg.source] = remaining_albums
-        return albums_to_process
+        eligible = self.filter_queued().filter_eligible()
+        self.albums = eligible.albums
+        return self.take(max(1, cfg.lidarr.chunk_size))
 
     def grab_most_wanted(self, monitor_downloads: bool = True) -> int:
         """Search and enqueue every album, optionally waiting for completion."""
@@ -1141,11 +1329,8 @@ class GrabbedAlbum:
     REMOTE = "Queued, Remotely"
     wanted_album: WantedAlbum
     files: list[dict]
-    candidate: DownloadCandidate | None = None
-    fallback_candidates: deque[DownloadCandidate] = field(default_factory=deque)
+    candidates: deque[DownloadCandidate]
     count_start: float = field(default_factory=time.monotonic)
-    import_folder: str | None = None
-    staging_folder: str | None = None
 
     @property
     def artist(self) -> str:
@@ -1170,13 +1355,13 @@ class GrabbedAlbum:
         else:
             folder_name = self.files[0]["file_dir"].split("\\")[-1]
 
-        self.staging_folder = safe_path(self.cfg.slskd.download_dir, folder_name)
-        if self.staging_folder is None:
+        staging_folder = safe_path(self.cfg.slskd.download_dir, folder_name)
+        if staging_folder is None:
             logger.error("Refusing to use an invalid slskd download directory")
             self.wanted_album.failure = "Download processing failed"
             return
 
-        self.import_folder = os.path.join(self.cfg.lidarr.download_dir, folder_name)
+        import_folder = os.path.join(self.cfg.lidarr.download_dir, folder_name)
         source_dirs = {safe_path(self.cfg.slskd.download_dir, file["file_dir"].split("\\")[-1]) for file in self.files}
         if None in source_dirs:
             logger.error("Refusing to use an invalid slskd source directory")
@@ -1184,33 +1369,33 @@ class GrabbedAlbum:
             return
 
         staging_folder_created = False
-        if os.path.exists(self.staging_folder):
-            if not os.path.isdir(self.staging_folder) or self.staging_folder not in source_dirs:
-                logger.error(f"Refusing to reuse existing staging directory: {self.staging_folder}")
+        if os.path.exists(staging_folder):
+            if not os.path.isdir(staging_folder) or staging_folder not in source_dirs:
+                logger.error(f"Refusing to reuse existing staging directory: {staging_folder}")
                 self.wanted_album.failure = "Download processing failed"
                 return
         else:
             try:
-                os.mkdir(self.staging_folder)
+                os.mkdir(staging_folder)
                 staging_folder_created = True
             except OSError:
-                logger.exception(f"Failed to create staging directory: {self.staging_folder}")
+                logger.exception(f"Failed to create staging directory: {staging_folder}")
                 self.wanted_album.failure = "Download processing failed"
                 return
 
-        success, source_dirs = self.move_album_files()
+        success, source_dirs = self.move_album_files(staging_folder)
         if not success:
             if staging_folder_created:
                 try:
-                    os.rmdir(self.staging_folder)
+                    os.rmdir(staging_folder)
                 except OSError:
-                    logger.warning(f"Could not remove temp import directory {self.staging_folder}")
+                    logger.warning(f"Could not remove temp import directory {staging_folder}")
 
             self.wanted_album.failure = "Download processing failed"
             return
 
         for source_dir in source_dirs:
-            if source_dir == self.staging_folder:
+            if source_dir == staging_folder:
                 continue
             try:
                 os.rmdir(source_dir)
@@ -1224,7 +1409,7 @@ class GrabbedAlbum:
 
         logger.info(f"Attempting Lidarr import of {self.artist} - {self.title}")
         self.tag_album_files()
-        self.trigger_lidarr_import()
+        self.trigger_lidarr_import(import_folder)
 
     def tag_album_files(self):
         """Tag each downloaded file with album/artist metadata (and disk info for multi-disc albums)."""
@@ -1248,7 +1433,7 @@ class GrabbedAlbum:
             except Exception:
                 logger.exception(f"Error writing tags for: {file['import_path']}")
 
-    def move_album_files(self):
+    def move_album_files(self, staging_folder: str):
         """Move/rename each file into the shared import folder, tracking source folders to clean up.
 
         Returns (success, rm_dirs). On failure, already-moved files are rolled back to their
@@ -1268,7 +1453,7 @@ class GrabbedAlbum:
             rm_dirs.add(src_folder)
             if "disk_no" in file and "disk_count" in file and file["disk_count"] > 1:
                 filename = f"Disk {file['disk_no']} - {filename}"
-            dst_file = safe_path(self.staging_folder, filename)
+            dst_file = safe_path(staging_folder, filename)
             if dst_file is None:
                 logger.error("Refusing to move a file to an invalid staging path")
                 return False, rm_dirs
@@ -1331,23 +1516,21 @@ class GrabbedAlbum:
 
     def try_next_candidate(self, reason: str) -> bool:
         """Replace the failed album attempt, returning True when no candidate remains."""
-        failed_candidate = self.candidate
-        failed_location = failed_candidate.location if failed_candidate else "unknown source"
+        failed_location = self.candidates.popleft().location if self.candidates else "unknown source"
 
         if not self.wanted_album.cancel_and_delete(self.files):
-            self.fallback_candidates.clear()
+            self.candidates.clear()
             self.wanted_album.failure = "Failed to remove previous album attempt"
             active_transfers = ", ".join(f"{file['username']}:{file['id']}" for file in self.files)
             logger.error("Refusing fallback for %s - %s: candidate removal failed; transfers=%s", self.artist, self.title, active_transfers)
             return True
 
-        while self.fallback_candidates:
-            candidate = self.fallback_candidates.popleft()
+        while self.candidates:
+            candidate = self.candidates[0]
             downloads, cleanup_ok = self.wanted_album.enqueue_candidate(candidate)
             if not cleanup_ok:
                 self.files = downloads or []
-                self.candidate = None
-                self.fallback_candidates.clear()
+                self.candidates.clear()
                 self.wanted_album.failure = "Failed to clean up failed enqueue"
                 logger.error(f"Refusing further fallback for {self.artist} - {self.title}: a partial candidate could not be fully removed")
                 return True
@@ -1356,13 +1539,11 @@ class GrabbedAlbum:
                 continue
 
             self.files = downloads
-            self.candidate = candidate
             self.count_start = time.monotonic()
             logger.info(f"Replaced failed candidate ({failed_location}) for {self.artist} - {self.title} after {reason}: {candidate.summary}")
             return False
 
         self.files = []
-        self.candidate = None
         self.wanted_album.failure = reason
         logger.info(f"{reason}: {self.artist} - {self.title}")
         return True
@@ -1381,8 +1562,7 @@ class GrabbedAlbum:
         if all(state == self.SUCCESS for state in states):
             logger.info(f"Completed download of {self.artist} - {self.title}")
             self.discard_incomplete_optional_files()
-            self.candidate = None
-            self.fallback_candidates.clear()
+            self.candidates.clear()
             self.process_completed_album()
             return True
 
@@ -1423,11 +1603,11 @@ class GrabbedAlbum:
         logger.warning(f"Failed import source folder not found: {folder_path}")
         return None
 
-    def trigger_lidarr_import(self) -> None:
+    def trigger_lidarr_import(self, import_folder: str) -> None:
         """Trigger a Lidarr scan and record its final result."""
         command = lidarr.post_command(
             name="DownloadedAlbumsScan",
-            path=self.import_folder,
+            path=import_folder,
         )
         logger.info(f"Starting Lidarr import for: {self.title} ID: {command['id']}")
 
@@ -1448,7 +1628,7 @@ class GrabbedAlbum:
                 return
             time.sleep(2)
 
-        path = current_task.get("body", {}).get("path") or self.import_folder
+        path = current_task.get("body", {}).get("path") or import_folder
         logger.info(f"{current_task.get('commandName', 'Lidarr command')} {current_task.get('message', '')} from: {path}")
         failed = current_task.get("status") == "failed" or current_task.get("result") == "unsuccessful"
         if not failed:
@@ -1698,7 +1878,7 @@ def env_override(section: str, key: str, value):
 
 def main():
     """Parse CLI arguments, resolve configuration, then run Soulseekarr once or on a loop."""
-    global lidarr, slskd, source_configs, album_states, remaining_albums_by_source
+    global lidarr, slskd
     parser = argparse.ArgumentParser(
         description="""Soulseekarr reads all of your "wanted" albums/artists from Lidarr and downloads them using Slskd"""
     )
@@ -1750,14 +1930,14 @@ def main():
         slskd = slskd_api.SlskdClient(host=cfg.slskd.host_url, api_key=cfg.slskd.api_key, url_base=cfg.slskd.url_base)
         lidarr = LidarrAPI(urljoin(f"{cfg.lidarr.host_url.rstrip('/')}/", cfg.lidarr.url_base.strip("/")), cfg.lidarr.api_key)
         source_configs = {source: AppConfig.from_yaml(raw_config, args, source=source) for source in cfg.lidarr.sources}
-        album_states = {}
-        remaining_albums_by_source = {}
+        Album._states.clear()
+        wanted_backlogs = {source: WantedAlbums() for source in source_configs}
 
         while True:
             wanted_albums = WantedAlbums()
             for source, config in source_configs.items():
                 logger.info(f"Getting wanted albums from '{source}' list")
-                albums = WantedAlbums.get_wanted(config)
+                albums = wanted_backlogs[source].next_batch(config)
                 logger.info(f"Fetched {len(albums)} albums from '{source}' list that aren't on the deny list and/or blacklisted.")
                 wanted_albums.extend(albums)
 

@@ -87,9 +87,9 @@ slskd:
   minimum_filename_match_ratio: 0.8
   # Minimum time (seconds) between searches (recommended 0.5-5 seconds)
   # Lower values speed up search queuing, but slskd will only perform two at once
-  minimum_search_interval: 1
+  minimum_search_interval: 5
   # Delete a search after grabbing an album
-  delete_searches: False
+  remove_searches: False
   # Max seconds to wait for stalled downloads to finish
   stalled_timeout: 7200
   # Max seconds to wait for remote queues to finish
