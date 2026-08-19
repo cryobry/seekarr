@@ -10,7 +10,7 @@ additional modules unless the user explicitly asks for it.
   merges the top-level `lidarr`/`slskd` defaults with an optional per-`source` override block
   (top-level `missing`/`cutoff_unmet` keys); `shuffle_all` is a global top-level Lidarr setting
   and is not source-specific. `main()` builds one `source_configs[source]` entry per configured
-  source, and each `Album`'s `cfg` field is bound to that source's `AppConfig` once, in
+  source, and each `WantedAlbum`'s `cfg` field is bound to that source's `AppConfig` once, in
   `__post_init__`, at construction time.
 - Every `lidarr.*`/`slskd.*` config value can also be overridden by an env var named
   `<SECTION>_<KEY>` (e.g. `LIDARR_API_KEY`, `SLSKD_MINIMUM_FILENAME_MATCH_RATIO`), applied in
@@ -35,8 +35,8 @@ additional modules unless the user explicitly asks for it.
   albums grabbed while `disable_sync` is enabled from being regrabbed. `remaining_albums_by_source`
   caches unprocessed wanted albums, but each selected batch is rechecked against the current Lidarr
   queue. `WantedAlbum` owns its current search results, folder cache, and failure state.
-- `GrabbedAlbum` doesn't inherit `Album` or duplicate identity fields (`id`, `artist`, `title`,
-  etc.) — it holds a `wanted_album: WantedAlbum` reference and exposes those as properties that
+- `GrabbedAlbum` doesn't duplicate identity fields (`id`, `artist`, `title`, etc.) — it holds a
+  `wanted_album: WantedAlbum` reference and exposes those as properties that
   delegate to it. It owns transfer polling, retry, completion, and import processing; keep
   cross-instance album state on `AlbumState` and current-search state on `WantedAlbum`.
 - Matching/enqueueing/import functions that take an `album` parameter (e.g. the old

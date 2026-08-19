@@ -175,7 +175,7 @@ Soulseekarr retrieves wanted records in configurable batches, retains the remain
 
 #### Faster searching
   
-Search requests are submitted continuously at the configured `minimum_search_interval` instead of waiting for each search to finish before starting the next one. Multiple searches can remain queued in slskd while its available search slots stay occupied. Search states are checked in bulk, and completed searches are collected and removed promptly.
+Search requests are submitted continuously at the configured `minimum_search_interval` instead of waiting for each search to finish before starting the next one. Multiple searches can remain queued in slskd while its available search slots stay occupied. Searches remain available through their configured timeout window before results are collected and optional cleanup is performed.
 
 #### Better search matching
 
