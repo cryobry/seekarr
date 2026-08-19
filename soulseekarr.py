@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 from __future__ import annotations
 import argparse
-from typing import ClassVar, Literal, Iterator, Iterable, Self
+from typing import ClassVar, Literal, Self
 import random
 import re
 import os
@@ -155,11 +155,10 @@ class SlskdConfig:
     remove_searches: bool
     remove_completed_downloads: bool
     requeue_failed_downloads: bool
-    timeout: int
+    search_timeout: int
     maximum_peer_queue: int
     minimum_peer_upload_speed: int
     minimum_match_ratio: float
-    minimum_search_interval: int
     ignored_users: list[str]
     search_blacklist: list[str]
     album_prepend_artist: bool
@@ -245,11 +244,10 @@ class AppConfig:
             remove_searches=bool(setting("slskd", "remove_searches", True)),
             remove_completed_downloads=bool(setting("slskd", "remove_completed_downloads", True)),
             requeue_failed_downloads=bool(setting("slskd", "requeue_failed_downloads", True)),
-            timeout=int(setting("slskd", "timeout", 10)),
+            search_timeout=int(setting("slskd", "search_timeout", 10)),
             maximum_peer_queue=int(setting("slskd", "maximum_peer_queue", 50)),
             minimum_peer_upload_speed=int(setting("slskd", "minimum_peer_upload_speed", 0)),
             minimum_match_ratio=float(setting("slskd", "minimum_filename_match_ratio", 0.5)),
-            minimum_search_interval=int(setting("slskd", "minimum_search_interval", 5)),
             ignored_users=setting("slskd", "ignored_users", []),
             search_blacklist=setting("slskd", "search_blacklist", []),
             album_prepend_artist=bool(setting("slskd", "album_prepend_artist", False)),
@@ -366,12 +364,12 @@ class WantedAlbum:
         logger.info(f"Searching for '{self.cfg.source}' album: {self.artist} - {self.title}")
         logger.debug(f"Search query: '{query}'")
 
-        timeout = max(1, self.cfg.slskd.timeout)
+        search_timeout = max(1, self.cfg.slskd.search_timeout)
 
         try:
             search = slskd.searches.search_text(
                 searchText=query,
-                searchTimeout=timeout * 1000,
+                searchTimeout=search_timeout * 1000,
                 filterResponses=True,
                 maximumPeerQueueLength=self.cfg.slskd.maximum_peer_queue,
                 minimumPeerUploadSpeed=self.cfg.slskd.minimum_peer_upload_speed,
@@ -404,11 +402,11 @@ class WantedAlbum:
 
         now = time.monotonic()
         if self.search_deadline is None:
-            self.search_deadline = now + max(1, self.cfg.slskd.timeout) + 5
+            self.search_deadline = now + max(1, self.cfg.slskd.search_timeout) + 5
         elif now >= self.search_deadline:
             logger.warning(
                 f"SLSKD search for {self.artist} - {self.title} did not complete "
-                f"within its {self.cfg.slskd.timeout}s timeout + 5s grace; stopping it"
+                f"within its {self.cfg.slskd.search_timeout}s timeout + 5s grace; stopping it"
             )
             try:
                 if not slskd.searches.stop(self.search_id):
@@ -465,41 +463,23 @@ class WantedAlbum:
                 except Exception:
                     logger.warning(f"Failed to delete search {search_id} from SLSKD", exc_info=True)
 
-    def queue_download(self) -> GrabbedAlbum | None:
+    def queue_download(self) -> AlbumDownload | None:
         """Enqueue the best match from this album's cached search results."""
         try:
             if not self.search_results:
                 self.failure = "Search failed"
                 return None
 
-            download = self.find_download()
-            if download is None and self.failure is None:
+            download = AlbumDownload(album=self, candidates=deque(self.discover_candidates()))
+            if download.enqueue_next():
+                return download
+            if self.failure is None:
                 self.failure = "No matching download"
-
-            return download
+            return None
         finally:
             self.search_results.clear()
             self.folder_cache.clear()
             self.match_cache.clear()
-
-    def find_download(self) -> GrabbedAlbum | None:
-        """Rank every complete match, then enqueue the first usable candidate."""
-        candidates = self.discover_candidates()
-
-        for rank, candidate in enumerate(candidates, 1):
-            downloads, cleanup_ok = self.enqueue_candidate(candidate)
-            if not cleanup_ok:
-                self.failure = "Failed to clean up failed enqueue"
-                return None
-            if downloads:
-                logger.info(f"Selected candidate {rank} for {self.artist} - {self.title}: {candidate.summary}")
-                return GrabbedAlbum(
-                    wanted_album=self,
-                    files=downloads,
-                    candidates=deque(candidates[rank - 1:]),
-                )
-
-        return None
 
     def discover_candidates(self) -> list[DownloadCandidate]:
         """Discover and rank complete candidates without starting downloads."""
@@ -616,49 +596,6 @@ class WantedAlbum:
                     disk_count=disk_count,
                 ), score))
         return sources
-
-    def enqueue_candidate(self, candidate: DownloadCandidate) -> tuple[list[dict] | None, bool]:
-        """Enqueue every source in a candidate, removing partial attempts."""
-        downloads = []
-        for source in candidate.sources:
-            source_downloads, accepted = self._enqueue_match(source)
-            if not accepted:
-                partial = downloads + (source_downloads or [])
-                return partial, self.cancel_and_delete(partial)
-            if not source_downloads:
-                if downloads:
-                    return None, self.cancel_and_delete(downloads)
-                return None, True
-            downloads.extend(source_downloads)
-        return downloads, True
-
-    def _enqueue_match(self, source: DownloadSource) -> tuple[list[dict] | None, bool]:
-        """Enqueue an already validated album directory."""
-        files = {file["filename"]: file.copy() for file in source.files}
-        required_names = source.required_names
-
-        for filename, file in files.items():
-            file["required"] = filename in required_names
-            file["filename"] = f"{source.file_dir}\\{filename}"
-
-        try:
-            downloads = slskd_do_enqueue(source.username, list(files.values()), source.file_dir)
-        except Exception:
-            logger.exception(f"Exception enqueueing {self.artist} - {self.title} from {source.username}")
-            return None, True
-
-        accepted = {file["filename"] for file in downloads or []}
-        required = {f"{source.file_dir}\\{filename}" for filename in source.required_names}
-
-        if downloads and required <= accepted:
-            for file in downloads:
-                if source.disk_no is not None:
-                    file["disk_no"] = source.disk_no
-                    file["disk_count"] = source.disk_count
-            return downloads, True
-
-        logger.info(f"Failed to enqueue {self.artist} - {self.title} from {source.username}")
-        return downloads or None, not downloads
 
     def match_directory(self, tracks, filetype, file_dir, username):
         """Return a complete, reasonably sized match for one directory."""
@@ -888,6 +825,352 @@ class WantedAlbum:
                 score -= 0.04
         return max(0.0, min(1.0, score))
 
+    def ordered_releases(self, releases):
+        """Return eligible releases in the configured preference order."""
+        cfg = self.cfg.lidarr
+
+        def is_multi_disc(release):
+            return len(release.get("media", [])) > 1 or release.get("mediumCount", 1) > 1
+
+        if cfg.use_selected_lidarr_release:
+            selected = next(
+                (release for release in releases if release.get("monitored") and (cfg.allow_multi_disc or not is_multi_disc(release))),
+                None,
+            )
+            if selected is not None:
+                logger.info(
+                    f"Using selected Lidarr release for {self.artist}: {selected['format']}, {selected['trackCount']} tracks, ID: {selected['id']}"
+                )
+                return [selected]
+
+        def eligible(release):
+            country = release["country"][0] if release["country"] else None
+            return (
+                (cfg.allow_multi_disc or not is_multi_disc(release)) and (cfg.skip_region_check or country in cfg.accepted_countries) and
+                self.release_format_accepted(release) and release["status"] == "Official"
+            )
+
+        eligible_releases = [release for release in releases if eligible(release)]
+        if cfg.use_most_common_tracknum and eligible_releases:
+            track_count = Counter(release["trackCount"] for release in eligible_releases).most_common(1)[0][0]
+            eligible_releases = [release for release in eligible_releases if release["trackCount"] == track_count]
+        return eligible_releases
+
+    def release_format_accepted(self, release) -> bool:
+        """Check a release's format against `accepted_formats`, unwrapping multi-disc prefixes (e.g. "2xCD" -> "CD")."""
+        fmt = release["format"]
+        match = re.match(r"^\d+x", fmt, re.IGNORECASE)
+        if match:
+            if not self.cfg.lidarr.allow_multi_disc:
+                return False
+            fmt = fmt[match.end():]
+        return fmt in self.cfg.lidarr.accepted_formats
+
+
+class WantedQueue(list[WantedAlbum]):
+    """A backlog or processing batch of wanted albums."""
+
+    SEARCH_SLOTS = 2
+
+    def take(self, count: int) -> Self:
+        """Remove and return the first `count` albums."""
+        selected = self[:count]
+        del self[:count]
+        return type(self)(selected)
+
+    def shuffle(self) -> None:
+        random.shuffle(self)
+
+    def deduplicate(self) -> Self:
+        """Keep one album per ID, preferring the stricter cutoff-unmet source."""
+        unique_albums: dict[int, WantedAlbum] = {}
+        for album in self:
+            current = unique_albums.get(album.id)
+            if current is None or album.cfg.source == "cutoff_unmet":
+                unique_albums[album.id] = album
+        return type(self)(unique_albums.values())
+
+    def filter_eligible(self) -> Self:
+        """Return albums that are eligible to be searched."""
+        filtered = []
+
+        for album in self:
+            reason = album.skip_reason()
+            if reason:
+                logger.info(f"Skipping {reason}: {album.artist} - {album.title} (ID: {album.id})")
+            else:
+                filtered.append(album)
+
+        return type(self)(filtered)
+
+    def next_batch(self, cfg: AppConfig) -> Self:
+        """Return the next batch of eligible wanted albums for this source."""
+        if not self:
+            wanted_kwargs = {
+                "missing": cfg.source == "missing",
+                "page_size": 250,
+                "sort_key": "id" if cfg.lidarr.search_type == "shuffle" else cfg.lidarr.sort_key,
+                "sort_dir": "ascending" if cfg.lidarr.search_type == "shuffle" else cfg.lidarr.sort_dir,
+            }
+            try:
+                wanted_page = lidarr.get_wanted(page=1, **wanted_kwargs)
+            except PyarrError as ex:
+                logger.error(f"Failed to get wanted records: {ex}")
+                return type(self)()
+
+            raw_albums = list(wanted_page["records"])
+            total_albums = wanted_page["totalRecords"]
+            page = 2
+            while len(raw_albums) < total_albums:
+                try:
+                    wanted_page = lidarr.get_wanted(page=page, **wanted_kwargs)
+                except PyarrError as ex:
+                    logger.error(f"Failed to get wanted page {page}: {ex}")
+                    break
+
+                page_records = wanted_page["records"]
+                if not page_records:
+                    logger.warning("Lidarr returned an empty page before totalRecords was reached")
+                    break
+
+                raw_albums.extend(page_records)
+                page += 1
+
+            self[:] = [WantedAlbum.prune_wanted_record(raw, cfg) for raw in raw_albums]
+
+            if cfg.lidarr.search_type == "shuffle" and not cfg.lidarr.shuffle_all:
+                logger.info(f"search_type: shuffle (shuffling '{cfg.source}' albums)")
+                self.shuffle()
+
+        eligible = self.filter_queued().filter_eligible()
+        self[:] = eligible
+        return self.take(max(1, cfg.lidarr.chunk_size))
+
+    def grab_most_wanted(self, monitor_downloads: bool = True) -> int:
+        """Search and enqueue every album, optionally waiting for completion."""
+        downloads = self.search_and_queue()
+
+        logger.info(f"Total downloads added: {len(downloads)}")
+        for album in downloads:
+            logger.info(f"Album: {album.title} Artist: {album.artist}")
+        if monitor_downloads:
+            downloads.monitor_downloads()
+        else:
+            for download in downloads:
+                download.album.state.queued = True
+            logger.info("Download monitoring disabled; continuing to the next Lidarr batch")
+
+        failures = [album for album in self if album.failure]
+        logger.info(f"Failed albums: {len(failures)}")
+
+        for album in failures:
+            logger.info(f"{album.failure}: {album.artist} - {album.title}")
+
+        return len(failures)
+
+    def search_and_queue(self) -> DownloadBatch:
+        """Keep two slskd searches pending and enqueue completed results."""
+        remaining = deque(self)
+        pending: list[WantedAlbum] = []
+        downloads = DownloadBatch()
+
+        def fill_search_slots() -> None:
+            while remaining and len(pending) < self.SEARCH_SLOTS:
+                album = remaining.popleft()
+                if album.start_search():
+                    pending.append(album)
+
+        fill_search_slots()
+
+        while pending:
+            try:
+                states = {search["id"]: search for search in slskd.searches.get_all()}
+            except Exception:
+                logger.exception("Failed to get SLSKD search states")
+                time.sleep(1)
+                continue
+
+            completed = []
+            for pending_album in pending.copy():
+                if not pending_album.search_finished(states.get(pending_album.search_id)):
+                    continue
+
+                pending.remove(pending_album)
+                if pending_album.collect_search():
+                    completed.append(pending_album)
+
+            # Refill freed slskd slots before potentially expensive matching and enqueueing.
+            fill_search_slots()
+
+            for album in completed:
+                download = album.queue_download()
+                if download:
+                    downloads.append(download)
+
+            if not completed and pending:
+                time.sleep(1)
+
+        return downloads
+
+    def filter_queued(self) -> Self:
+        """Return albums that are not already in Lidarr's download queue."""
+        if not self:
+            return self
+
+        current_queue = []
+        total_queued = 1
+        page = 1
+
+        try:
+            while len(current_queue) < total_queued:
+                queue_page = lidarr.get_queue(
+                    page=page,
+                    sort_key="albums.title",
+                    sort_dir="ascending",
+                )
+                page_records = queue_page["records"]
+                total_queued = queue_page["totalRecords"]
+
+                if not page_records:
+                    if len(current_queue) < total_queued:
+                        logger.warning("Lidarr returned an empty queue page before "
+                                       "totalRecords was reached, so the queue was not filtered")
+                        return self
+                    break
+
+                current_queue.extend(page_records)
+                page += 1
+        except PyarrError as ex:
+            logger.error(f"Failed to get queue details, so the queue was not filtered: {ex}")
+            return self
+
+        queued_ids = set()
+
+        for record in current_queue:
+            record_ids = {release["albumId"] for release in record.get("releases", []) if "albumId" in release}
+            if "albumId" in record:
+                record_ids.add(record["albumId"])
+
+            if not record_ids:
+                logger.warning(f"Ignoring queue entry without albumId: {record.keys()}")
+
+            queued_ids.update(record_ids)
+
+        not_queued = []
+        for album in self:
+            if album.id in queued_ids:
+                logger.info(f"Skipping album '{album.title}' because it's already in download queue")
+            else:
+                not_queued.append(album)
+
+        return type(self)(not_queued)
+
+
+@dataclass
+class AlbumDownload:
+    """An album's enqueued downloads, tracked from enqueue through Lidarr import.
+
+    Built once by WantedAlbum.queue_download(), then mutated in place by monitor_downloads() and
+    process_completed_album()/trigger_lidarr_import() as the download/import progresses.
+    Identity fields (id, artist, title, ...) are read from `album` instead of being
+    duplicated here.
+    """
+
+    SUCCESS = "Completed, Succeeded"
+    REMOTE = "Queued, Remotely"
+    album: WantedAlbum
+    files: list[dict] = field(default_factory=list)
+    candidates: deque[DownloadCandidate] = field(default_factory=deque)
+    count_start: float = field(default_factory=time.monotonic)
+
+    @property
+    def artist(self) -> str:
+        return self.album.artist
+
+    @property
+    def title(self) -> str:
+        return self.album.title
+
+    @property
+    def year(self) -> str:
+        return self.album.year
+
+    @property
+    def cfg(self) -> AppConfig:
+        return self.album.cfg
+
+    def enqueue_next(self) -> bool:
+        """Enqueue the next ranked candidate, retaining later candidates for fallback."""
+        while self.candidates:
+            candidate = self.candidates[0]
+            downloads, cleanup_ok = self.enqueue_candidate(candidate)
+            if not cleanup_ok:
+                self.files = downloads or []
+                self.candidates.clear()
+                self.album.failure = "Failed to clean up failed enqueue"
+                logger.error(
+                    f"Refusing further fallback for {self.artist} - {self.title}: "
+                    "a partial candidate could not be fully removed"
+                )
+                return False
+            if not downloads:
+                logger.info(
+                    f"Stored candidate unavailable for {self.artist} - {self.title}; "
+                    "continuing to the next candidate"
+                )
+                self.candidates.popleft()
+                continue
+
+            self.files = downloads
+            self.count_start = time.monotonic()
+            logger.info(f"Selected candidate for {self.artist} - {self.title}: {candidate.summary}")
+            return True
+
+        return False
+
+    def enqueue_candidate(self, candidate: DownloadCandidate) -> tuple[list[dict] | None, bool]:
+        """Enqueue every source in a candidate, removing partial attempts."""
+        downloads = []
+        for source in candidate.sources:
+            source_downloads, accepted = self._enqueue_match(source)
+            if not accepted:
+                partial = downloads + (source_downloads or [])
+                return partial, self.cancel_and_delete(partial)
+            if not source_downloads:
+                if downloads:
+                    return None, self.cancel_and_delete(downloads)
+                return None, True
+            downloads.extend(source_downloads)
+        return downloads, True
+
+    def _enqueue_match(self, source: DownloadSource) -> tuple[list[dict] | None, bool]:
+        """Enqueue an already validated album directory."""
+        files = {file["filename"]: file.copy() for file in source.files}
+        required_names = source.required_names
+
+        for filename, file in files.items():
+            file["required"] = filename in required_names
+            file["filename"] = f"{source.file_dir}\\{filename}"
+
+        try:
+            downloads = slskd_do_enqueue(source.username, list(files.values()), source.file_dir)
+        except Exception:
+            logger.exception(f"Exception enqueueing {self.artist} - {self.title} from {source.username}")
+            return None, True
+
+        accepted = {file["filename"] for file in downloads or []}
+        required = {f"{source.file_dir}\\{filename}" for filename in source.required_names}
+
+        if downloads and required <= accepted:
+            for file in downloads:
+                if source.disk_no is not None:
+                    file["disk_no"] = source.disk_no
+                    file["disk_count"] = source.disk_count
+            return downloads, True
+
+        logger.info(f"Failed to enqueue {self.artist} - {self.title} from {source.username}")
+        return downloads or None, not downloads
+
     def cancel_and_delete(self, files) -> bool:
         """Cancel downloads and remove their local files."""
         success = True
@@ -937,299 +1220,6 @@ class WantedAlbum:
                 f"Failed to verify removal of download {file['filename']} for {file['username']}", exc_info=True)
             return False
 
-    def ordered_releases(self, releases):
-        """Return eligible releases in the configured preference order."""
-        cfg = self.cfg.lidarr
-
-        def is_multi_disc(release):
-            return len(release.get("media", [])) > 1 or release.get("mediumCount", 1) > 1
-
-        if cfg.use_selected_lidarr_release:
-            selected = next(
-                (release for release in releases if release.get("monitored") and (cfg.allow_multi_disc or not is_multi_disc(release))),
-                None,
-            )
-            if selected is not None:
-                logger.info(
-                    f"Using selected Lidarr release for {self.artist}: {selected['format']}, {selected['trackCount']} tracks, ID: {selected['id']}"
-                )
-                return [selected]
-
-        def eligible(release):
-            country = release["country"][0] if release["country"] else None
-            return (
-                (cfg.allow_multi_disc or not is_multi_disc(release)) and (cfg.skip_region_check or country in cfg.accepted_countries) and
-                self.release_format_accepted(release) and release["status"] == "Official"
-            )
-
-        eligible_releases = [release for release in releases if eligible(release)]
-        if cfg.use_most_common_tracknum and eligible_releases:
-            track_count = Counter(release["trackCount"] for release in eligible_releases).most_common(1)[0][0]
-            eligible_releases = [release for release in eligible_releases if release["trackCount"] == track_count]
-        return eligible_releases
-
-    def release_format_accepted(self, release) -> bool:
-        """Check a release's format against `accepted_formats`, unwrapping multi-disc prefixes (e.g. "2xCD" -> "CD")."""
-        fmt = release["format"]
-        match = re.match(r"^\d+x", fmt, re.IGNORECASE)
-        if match:
-            if not self.cfg.lidarr.allow_multi_disc:
-                return False
-            fmt = fmt[match.end():]
-        return fmt in self.cfg.lidarr.accepted_formats
-
-
-@dataclass
-class WantedAlbums:
-    """A list of Lidarr wanted albums, with a few convenience methods for filtering and sorting."""
-
-    albums: list[WantedAlbum] = field(default_factory=list)
-
-    def __iter__(self) -> Iterator[WantedAlbum]:
-        return iter(self.albums)
-
-    def __len__(self) -> int:
-        return len(self.albums)
-
-    def extend(self, albums: Iterable[WantedAlbum]) -> None:
-        self.albums.extend(albums)
-
-    def take(self, count: int) -> Self:
-        """Remove and return the first `count` albums."""
-        selected = self.albums[:count]
-        del self.albums[:count]
-        return type(self)(albums=selected)
-
-    def shuffle(self) -> None:
-        random.shuffle(self.albums)
-
-    def deduplicate(self) -> Self:
-        """Keep one album per ID, preferring the stricter cutoff-unmet source."""
-        unique_albums: dict[int, WantedAlbum] = {}
-        for album in self.albums:
-            current = unique_albums.get(album.id)
-            if current is None or album.cfg.source == "cutoff_unmet":
-                unique_albums[album.id] = album
-        return type(self)(albums=list(unique_albums.values()))
-
-    def filter_eligible(self) -> Self:
-        """Return albums that are eligible to be searched."""
-        filtered = []
-
-        for album in self.albums:
-            reason = album.skip_reason()
-            if reason:
-                logger.info(f"Skipping {reason}: {album.artist} - {album.title} (ID: {album.id})")
-            else:
-                filtered.append(album)
-
-        return type(self)(albums=filtered)
-
-    def next_batch(self, cfg: AppConfig) -> Self:
-        """Return the next batch of eligible wanted albums for this source."""
-        if not self:
-            wanted_kwargs = {
-                "missing": cfg.source == "missing",
-                "page_size": 250,
-                "sort_key": "id" if cfg.lidarr.search_type == "shuffle" else cfg.lidarr.sort_key,
-                "sort_dir": "ascending" if cfg.lidarr.search_type == "shuffle" else cfg.lidarr.sort_dir,
-            }
-            try:
-                wanted_page = lidarr.get_wanted(page=1, **wanted_kwargs)
-            except PyarrError as ex:
-                logger.error(f"Failed to get wanted records: {ex}")
-                return type(self)()
-
-            raw_albums = list(wanted_page["records"])
-            total_albums = wanted_page["totalRecords"]
-            page = 2
-            while len(raw_albums) < total_albums:
-                try:
-                    wanted_page = lidarr.get_wanted(page=page, **wanted_kwargs)
-                except PyarrError as ex:
-                    logger.error(f"Failed to get wanted page {page}: {ex}")
-                    break
-
-                page_records = wanted_page["records"]
-                if not page_records:
-                    logger.warning("Lidarr returned an empty page before totalRecords was reached")
-                    break
-
-                raw_albums.extend(page_records)
-                page += 1
-
-            self.albums = [WantedAlbum.prune_wanted_record(raw, cfg) for raw in raw_albums]
-
-            if cfg.lidarr.search_type == "shuffle" and not cfg.lidarr.shuffle_all:
-                logger.info(f"search_type: shuffle (shuffling '{cfg.source}' albums)")
-                self.shuffle()
-
-        eligible = self.filter_queued().filter_eligible()
-        self.albums = eligible.albums
-        return self.take(max(1, cfg.lidarr.chunk_size))
-
-    def grab_most_wanted(self, monitor_downloads: bool = True) -> int:
-        """Search and enqueue every album, optionally waiting for completion."""
-        downloads = self.search_and_queue()
-
-        logger.info(f"Total downloads added: {len(downloads)}")
-        for album in downloads:
-            logger.info(f"Album: {album.title} Artist: {album.artist}")
-        if monitor_downloads:
-            downloads.monitor_downloads()
-        else:
-            for download in downloads:
-                download.wanted_album.state.queued = True
-            logger.info("Download monitoring disabled; continuing to the next Lidarr batch")
-
-        failures = [album for album in self.albums if album.failure]
-        logger.info(f"Failed albums: {len(failures)}")
-
-        for album in failures:
-            logger.info(f"{album.failure}: {album.artist} - {album.title}")
-
-        return len(failures)
-
-    def search_and_queue(self) -> GrabbedAlbums:
-        """Submit spaced searches and process each one as it finishes."""
-        pending: list[WantedAlbum] = []
-        searched: deque[WantedAlbum] = deque()
-        downloads = GrabbedAlbums()
-        last_search_start: float | None = None
-        last_interval = 0
-
-        def collect_finished() -> None:
-            try:
-                states = {search["id"]: search for search in slskd.searches.get_all()}
-            except Exception:
-                logger.exception("Failed to get SLSKD search states")
-                return
-
-            for pending_album in pending.copy():
-                if not pending_album.search_finished(states.get(pending_album.search_id)):
-                    continue
-
-                pending.remove(pending_album)
-                if pending_album.collect_search():
-                    searched.append(pending_album)
-
-        for album in self.albums:
-            interval = max(0, album.cfg.slskd.minimum_search_interval)
-
-            if last_search_start is not None:
-                # Using the larger interval also handles differing per-source overrides.
-                required_interval = max(last_interval, interval)
-                next_search = last_search_start + required_interval
-
-                while (remaining := next_search - time.monotonic()) > 0:
-                    collect_finished()
-                    time.sleep(min(1, remaining))
-
-            last_search_start = time.monotonic()
-            last_interval = interval
-
-            if album.start_search():
-                pending.append(album)
-
-        while pending or searched:
-            collect_finished()
-
-            if searched:
-                download = searched.popleft().queue_download()
-                if download:
-                    downloads.append(download)
-            elif pending:
-                time.sleep(1)
-
-        return downloads
-
-    def filter_queued(self) -> Self:
-        """Return albums that are not already in Lidarr's download queue."""
-        if not self.albums:
-            return self
-
-        current_queue = []
-        total_queued = 1
-        page = 1
-
-        try:
-            while len(current_queue) < total_queued:
-                queue_page = lidarr.get_queue(
-                    page=page,
-                    sort_key="albums.title",
-                    sort_dir="ascending",
-                )
-                page_records = queue_page["records"]
-                total_queued = queue_page["totalRecords"]
-
-                if not page_records:
-                    if len(current_queue) < total_queued:
-                        logger.warning("Lidarr returned an empty queue page before "
-                                       "totalRecords was reached, so the queue was not filtered")
-                        return self
-                    break
-
-                current_queue.extend(page_records)
-                page += 1
-        except PyarrError as ex:
-            logger.error(f"Failed to get queue details, so the queue was not filtered: {ex}")
-            return self
-
-        queued_ids = set()
-
-        for record in current_queue:
-            record_ids = {release["albumId"] for release in record.get("releases", []) if "albumId" in release}
-            if "albumId" in record:
-                record_ids.add(record["albumId"])
-
-            if not record_ids:
-                logger.warning(f"Ignoring queue entry without albumId: {record.keys()}")
-
-            queued_ids.update(record_ids)
-
-        not_queued = []
-        for album in self.albums:
-            if album.id in queued_ids:
-                logger.info(f"Skipping album '{album.title}' because it's already in download queue")
-            else:
-                not_queued.append(album)
-
-        return type(self)(albums=not_queued)
-
-
-@dataclass
-class GrabbedAlbum:
-    """An album's enqueued downloads, tracked from enqueue through Lidarr import.
-
-    Built once by find_download(), then mutated in place by monitor_downloads() and
-    process_completed_album()/trigger_lidarr_import() as the download/import progresses.
-    Identity fields (id, artist, title, ...) are read from `wanted_album` instead of being
-    duplicated here.
-    """
-
-    SUCCESS = "Completed, Succeeded"
-    REMOTE = "Queued, Remotely"
-    wanted_album: WantedAlbum
-    files: list[dict]
-    candidates: deque[DownloadCandidate]
-    count_start: float = field(default_factory=time.monotonic)
-
-    @property
-    def artist(self) -> str:
-        return self.wanted_album.artist
-
-    @property
-    def title(self) -> str:
-        return self.wanted_album.title
-
-    @property
-    def year(self) -> str:
-        return self.wanted_album.year
-
-    @property
-    def cfg(self) -> AppConfig:
-        return self.wanted_album.cfg
-
     def process_completed_album(self) -> None:
         """Prepare a completed download and optionally import it into Lidarr."""
         if self.cfg.slskd.rename_download_folders:
@@ -1240,21 +1230,21 @@ class GrabbedAlbum:
         staging_folder = safe_path(self.cfg.slskd.download_dir, folder_name)
         if staging_folder is None:
             logger.error("Refusing to use an invalid slskd download directory")
-            self.wanted_album.failure = "Download processing failed"
+            self.album.failure = "Download processing failed"
             return
 
         import_folder = os.path.join(self.cfg.lidarr.download_dir, folder_name)
         source_dirs = {safe_path(self.cfg.slskd.download_dir, file["file_dir"].split("\\")[-1]) for file in self.files}
         if None in source_dirs:
             logger.error("Refusing to use an invalid slskd source directory")
-            self.wanted_album.failure = "Download processing failed"
+            self.album.failure = "Download processing failed"
             return
 
         staging_folder_created = False
         if os.path.exists(staging_folder):
             if not os.path.isdir(staging_folder) or staging_folder not in source_dirs:
                 logger.error(f"Refusing to reuse existing staging directory: {staging_folder}")
-                self.wanted_album.failure = "Download processing failed"
+                self.album.failure = "Download processing failed"
                 return
         else:
             try:
@@ -1262,7 +1252,7 @@ class GrabbedAlbum:
                 staging_folder_created = True
             except OSError:
                 logger.exception(f"Failed to create staging directory: {staging_folder}")
-                self.wanted_album.failure = "Download processing failed"
+                self.album.failure = "Download processing failed"
                 return
 
         success, source_dirs = self.move_album_files(staging_folder)
@@ -1273,7 +1263,7 @@ class GrabbedAlbum:
                 except OSError:
                     logger.warning(f"Could not remove temp import directory {staging_folder}")
 
-            self.wanted_album.failure = "Download processing failed"
+            self.album.failure = "Download processing failed"
             return
 
         for source_dir in source_dirs:
@@ -1286,7 +1276,7 @@ class GrabbedAlbum:
 
         if self.cfg.lidarr.disable_sync:
             logger.info(f"Sync disabled. Skipping Lidarr import of {self.artist} - {self.title}")
-            self.wanted_album.state.grabbed = True
+            self.album.state.grabbed = True
             return
 
         logger.info(f"Attempting Lidarr import of {self.artist} - {self.title}")
@@ -1379,13 +1369,13 @@ class GrabbedAlbum:
             file for file in self.files if not file.get("required", True) and (file.get("status") or {}).get("state") != self.SUCCESS
         ]
         if optional_files:
-            self.wanted_album.cancel_and_delete(optional_files)
+            self.cancel_and_delete(optional_files)
             self.files = [file for file in self.files if file not in optional_files]
 
     def fail(self, reason: str) -> bool:
         """Cancel this album, record its failure, and mark it terminal."""
-        self.wanted_album.cancel_and_delete(self.files)
-        self.wanted_album.failure = reason
+        self.cancel_and_delete(self.files)
+        self.album.failure = reason
         logger.info(f"{reason}: {self.artist} - {self.title}")
         return True
 
@@ -1398,37 +1388,26 @@ class GrabbedAlbum:
         """Replace the failed album attempt, returning True when no candidate remains."""
         failed_location = self.candidates.popleft().location if self.candidates else "unknown source"
 
-        if not self.wanted_album.cancel_and_delete(self.files):
+        if not self.cancel_and_delete(self.files):
             self.candidates.clear()
-            self.wanted_album.failure = "Failed to remove previous album attempt"
+            self.album.failure = "Failed to remove previous album attempt"
             active_transfers = ", ".join(f"{file['username']}:{file['id']}" for file in self.files)
             logger.error("Refusing fallback for %s - %s: candidate removal failed; transfers=%s", self.artist, self.title, active_transfers)
             return True
 
-        while self.candidates:
+        if self.enqueue_next():
             candidate = self.candidates[0]
-            downloads, cleanup_ok = self.wanted_album.enqueue_candidate(candidate)
-            if not cleanup_ok:
-                self.files = downloads or []
-                self.candidates.clear()
-                self.wanted_album.failure = "Failed to clean up failed enqueue"
-                logger.error(f"Refusing further fallback for {self.artist} - {self.title}: a partial candidate could not be fully removed")
-                return True
-            if not downloads:
-                logger.info(
-                    f"Stored candidate unavailable for {self.artist} - {self.title}; "
-                    "continuing to the next candidate"
-                )
-                self.candidates.popleft()
-                continue
-
-            self.files = downloads
-            self.count_start = time.monotonic()
-            logger.info(f"Replaced failed candidate ({failed_location}) for {self.artist} - {self.title} after {reason}: {candidate.summary}")
+            logger.info(
+                f"Replaced failed candidate ({failed_location}) for {self.artist} - {self.title} "
+                f"after {reason}: {candidate.summary}"
+            )
             return False
 
+        if self.album.failure == "Failed to clean up failed enqueue":
+            return True
+
         self.files = []
-        self.wanted_album.failure = reason
+        self.album.failure = reason
         logger.info(f"{reason}: {self.artist} - {self.title}")
         return True
 
@@ -1501,14 +1480,14 @@ class GrabbedAlbum:
 
             if not isinstance(current_task, dict):
                 logger.error(f"Invalid Lidarr command response: {current_task!r}")
-                self.wanted_album.failure = "Invalid Lidarr import response"
+                self.album.failure = "Invalid Lidarr import response"
                 return
 
             if current_task.get("status") in ("completed", "failed"):
                 break
             if time.monotonic() >= deadline:
                 logger.error(f"Timed out waiting for Lidarr import of {self.artist} - {self.title}")
-                self.wanted_album.state.import_pending = True
+                self.album.state.import_pending = True
                 return
             time.sleep(2)
 
@@ -1516,42 +1495,30 @@ class GrabbedAlbum:
         logger.info(f"{current_task.get('commandName', 'Lidarr command')} {current_task.get('message', '')} from: {path}")
         failed = current_task.get("status") == "failed" or current_task.get("result") == "unsuccessful"
         if not failed:
-            self.wanted_album.state.import_failed = False
+            self.album.state.import_failed = False
             return
 
-        self.wanted_album.failure = "Lidarr import failed"
+        self.album.failure = "Lidarr import failed"
         try:
             self.move_failed_import(path)
         except Exception:
             logger.exception("Error moving failed Lidarr import")
 
         if self.cfg.lidarr.failed_import_denylist:
-            self.wanted_album.state.import_failed = True
+            self.album.state.import_failed = True
             logger.info(
                 f"Added to failed import denylist: "
-                f"{self.artist} - {self.title} (ID: {self.wanted_album.id})"
+                f"{self.artist} - {self.title} (ID: {self.album.id})"
             )
 
 
-@dataclass
-class GrabbedAlbums:
-    """A list of Slskd grabbed albums, with a few convenience methods for filtering and sorting."""
-
-    albums: list[GrabbedAlbum] = field(default_factory=list)
-
-    def __iter__(self) -> Iterator[GrabbedAlbum]:
-        return iter(self.albums)
-
-    def __len__(self) -> int:
-        return len(self.albums)
-
-    def append(self, album: GrabbedAlbum) -> None:
-        self.albums.append(album)
+class DownloadBatch(list[AlbumDownload]):
+    """Active album downloads monitored as one batch."""
 
     def refresh_download_status(self) -> dict[tuple[str, int], dict]:
         """Fetch each active user's downloads and index them by username and ID."""
         statuses = {}
-        usernames = {file["username"] for album in self.albums for file in album.files}
+        usernames = {file["username"] for download in self for file in download.files}
 
         for username in usernames:
             try:
@@ -1567,11 +1534,11 @@ class GrabbedAlbums:
 
     def monitor_downloads(self) -> None:
         """Poll active albums until every album reaches a terminal state."""
-        while self.albums:
+        while self:
             statuses = self.refresh_download_status()
-            for album in self.albums.copy():
-                if album.poll(statuses):
-                    self.albums.remove(album)
+            for download in self.copy():
+                if download.poll(statuses):
+                    self.remove(download)
                     break
             else:
                 time.sleep(5)
@@ -1816,10 +1783,10 @@ def main():
         lidarr = LidarrAPI(urljoin(f"{cfg.lidarr.host_url.rstrip('/')}/", cfg.lidarr.url_base.strip("/")), cfg.lidarr.api_key)
         source_configs = {source: AppConfig.from_yaml(raw_config, args, source=source) for source in cfg.lidarr.sources}
         WantedAlbum._states.clear()
-        wanted_backlogs = {source: WantedAlbums() for source in source_configs}
+        wanted_backlogs = {source: WantedQueue() for source in source_configs}
 
         while True:
-            wanted_albums = WantedAlbums()
+            wanted_albums = WantedQueue()
             for source, config in source_configs.items():
                 logger.info(f"Getting wanted albums from '{source}' list")
                 albums = wanted_backlogs[source].next_batch(config)

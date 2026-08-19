@@ -163,7 +163,7 @@ Soulseekarr began as a fork of [mrusse/soularr](https://github.com/mrusse/soular
 
 #### Per-list YAML configuration
   
-The `missing` and `cutoff_unmet` Lidarr lists can override the default Lidarr and slskd settings independently. Different lists can therefore use different formats, regions, sorting methods, search intervals, matching thresholds, and download behavior.
+The `missing` and `cutoff_unmet` Lidarr lists can override the default Lidarr and slskd settings independently. Different lists can therefore use different formats, regions, sorting methods, search timeouts, matching thresholds, and download behavior.
 
 #### Flexible sorting and randomization
 
@@ -174,8 +174,8 @@ Wanted albums can follow Lidarr column sorting, be shuffled within each source l
 Soulseekarr retrieves wanted records in configurable batches, retains the remaining albums between processing cycles, deduplicates albums across lists, and reuses album and release information where possible.
 
 #### Faster searching
-  
-Search requests are submitted continuously at the configured `minimum_search_interval` instead of waiting for each search to finish before starting the next one. Multiple searches can remain queued in slskd while its available search slots stay occupied. Searches remain available through their configured timeout window before results are collected and optional cleanup is performed.
+
+Soulseekarr keeps two searches pending in slskd while completed results are collected and matched. New searches fill freed slots before potentially expensive release matching and download enqueueing begins. Searches remain available through their configured timeout window before results are collected and optional cleanup is performed.
 
 #### Better search matching
 

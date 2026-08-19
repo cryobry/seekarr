@@ -81,11 +81,10 @@ def migrate_soularr_ini_config(config_dir: str) -> bool:
             "host_url": get("Slskd", "host_url"),
             "url_base": get("Slskd", "url_base", "/"),
             "download_dir": get("Slskd", "download_dir"),
-            "timeout": max(1, get_int("Search Settings", "search_timeout", 5000) // 1000),
+            "search_timeout": max(1, get_int("Search Settings", "search_timeout", 5000) // 1000),
             "maximum_peer_queue": get_int("Search Settings", "maximum_peer_queue", 50),
             "minimum_peer_upload_speed": get_int("Search Settings", "minimum_peer_upload_speed", 0),
             "minimum_filename_match_ratio": get_float("Search Settings", "minimum_filename_match_ratio", 0.5),
-            "minimum_search_interval": get_int("Search Settings", "minimum_search_interval", 5),
             "remove_searches": get_bool(
                 "Slskd",
                 "delete_searches",
