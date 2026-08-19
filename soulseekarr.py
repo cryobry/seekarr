@@ -48,7 +48,7 @@ def _maximum_weight_assignment(score_matrix: list[list[float]], minimum_score: f
         return None
 
     costs = [
-        [1.0 - score if score >= minimum_score else 2.0 for score in row]
+        [1.0 - score if score >= minimum_score else row_count + 1.0 for score in row]
         for row in score_matrix
     ]
     row_potentials = [0.0] * (row_count + 1)
@@ -974,6 +974,16 @@ class WantedAlbum(Album):
                     continue
                 trailing = " ".join(candidate_tokens[-len(expected_tokens):])
                 scores.append(WantedAlbum._score_variant(expected, trailing))
+                for index, token in enumerate(candidate_tokens[:-1]):
+                    if not token.isdigit() or index != len(expected_tokens) - 1:
+                        continue
+                    candidate_without_number = candidate_tokens[:index] + candidate_tokens[index + 1:]
+                    if candidate_without_number[:len(expected_tokens)] != expected_tokens:
+                        continue
+                    if not WantedAlbum._harmless_trailing_tokens(candidate_without_number[len(expected_tokens):]):
+                        continue
+                    numeric_gap_match = " ".join(candidate_without_number[:len(expected_tokens)])
+                    scores.append(WantedAlbum._score_variant(expected, numeric_gap_match))
                 for index in range(len(candidate_tokens) - len(expected_tokens) + 1):
                     if candidate_tokens[index:index + len(expected_tokens)] != expected_tokens:
                         continue
