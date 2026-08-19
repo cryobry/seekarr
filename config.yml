@@ -95,8 +95,8 @@ slskd:
   # Max seconds to wait for remote queues to finish
   remote_queue_timeout: 3600
   # Remove successfully completed downloads from slskd's transfer list after each run
-  remove_completed_downloads: True
-  # Requeue individual files that error out or were rejected during download
+  remove_completed_downloads: False
+  # Replace a failed album with ranked complete candidates when enabled.
   # If False, the whole album grab is marked failed as soon as one file errors, with no retry.
   requeue_failed_downloads: True
   # Prepend artist name when searching for albums
