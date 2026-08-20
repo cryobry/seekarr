@@ -4,9 +4,39 @@
 
 ## About
 
-Soulseekarr reads Lidarr's _**Wanted**_ and/or _**Cutoff Unmet**_ album lists and downloads them with Slskd using [pyarr](https://github.com/totaldebug/pyarr) and [slskd-api](https://github.com/bigoulours/slskd-python-api). As downloads complete in Slskd, Soulseekarr informs Lidarr to import the files.
+Soulseekarr reads Lidarr's _**Wanted**_ and/or _**Cutoff Unmet**_ album lists and downloads them with Slskd using [pyarr](https://github.com/totaldebug/pyarr) and [slskd-api](https://github.com/bigoulours/slskd-python-api). As downloads complete in Slskd, Soulseekarr can inform Lidarr to import the files (or operate in various standalone modes).
 
-Alternatively, Soulseekarr can operate in various standalone modes using its search, monitoring, and post-processing options described in [`config.yml`](config.yml).
+## Compared to Soularr
+
+Soulseekarr began as a fork of [mrusse/soularr](https://github.com/mrusse/soularr), but most of its search, matching, configuration, state-management, download-monitoring, and Lidarr-integration has been rewritten to enable the following additional features:
+
+- **Per-list YAML configuration**
+
+  The _**Wanted**_ and _**Cutoff Unmet**_ list search settings can be overridden independently, so each wanted list can use different formats, regions, sorting methods, search timeouts, matching thresholds, and download behavior.
+
+- **Flexible sorting and randomization**
+
+  Wanted albums can be sorted by any of Lidarr's wanted columns (ascending/descending), shuffled within each source list, or shuffled together across both lists.
+
+- **Fewer Lidarr API requests**
+
+  Retrieves wanted album records in configurable batches, retains the remaining albums between processing cycles, deduplicates albums across lists, and reuses album and release information where possible.
+
+- **Faster searching**
+
+  Uses the Slskd maximum of two concurrent searches while completed results are collected and matched. New searches fill freed slots before potentially expensive release matching and download enqueueing begins. Searches remain available through their configured timeout window before results are collected and optional cleanup is performed.
+
+- **Better search matching**
+
+  Search supports `rapidfuzz` fuzzy matching so bonus albums and other similar matches aren't accidentally skipped. Every complete album candidate is discovered before enqueueing, scored by filename quality and peer availability, and ranked within the configured file-type and release preferences. Unused candidates remain available as fallback downloads.
+
+- **Improved queue control**
+
+  Configurable chunk sizes determine how many albums are processed per cycle. Soulseekarr can filter unwanted files, enforce file-count safety limits, handle multi-disc releases, require all expected tracks to be accepted, and continue processing new Lidarr batches when download monitoring is disabled.
+
+- **Album-aware download handling**
+
+  Downloads are monitored as complete albums rather than unrelated transfers. Soulseekarr detects missing statuses, stalled downloads, remote-queue timeouts, rejected transfers, hard failures, incomplete optional files, and partially accepted enqueue requests. When failed-download requeueing is enabled, the failed transfer is replaced with the next ranked complete candidate; successful files from the failed attempt are never mixed into the replacement. Candidates that cannot be enqueued are skipped before the album is marked failed.
 
 ## Prerequisites
 
@@ -15,14 +45,14 @@ Alternatively, Soulseekarr can operate in various standalone modes using its sea
 - Specify your `lidarr.api_key`, `lidarr.host_url`, and `lidarr.download_dir` in [config.yml](config.yml).
 - Ensure Lidarr can see your `slskd.download_dir`. If you are running Lidarr in a container you may need to mount the directory.
 
-### 2. [Install Slskd](https://github.com/slskd/slskd) > 0.22.2
+### 2. [Install Slskd](https://github.com/slskd/slskd)
 
 - Specify your `slskd.host_url`, [`slskd.api_key`](https://github.com/slskd/slskd/blob/master/docs/config.md#authentication) and `slskd.download_dir` in [config.yml](config.yml).
 - Ensure Slskd can see your `slskd.download_dir`. If you are running Lidarr in a container you may need to mount the directory.
 
-## Configuration
+## Configuration ([`config.yml`](config.yml))
 
-Soulseekarr expects [`config.yml`](config.yml) in its configuration directory (e.g. `~/.config/soulseekarr/config.yml` and typically mounted at `/data` in the container). The directory Soulseekarr looks for [`config.yml`](config.yml) is configurable using [`--config-dir`](#4-command-line-options) (see [Command-line options](#4-command-line-options)).
+Soulseekarr expects [`config.yml`](config.yml) in its configuration directory (e.g. `~/.config/soulseekarr/config.yml` and typically mounted at `/data` in the container). The directory Soulseekarr looks for [`config.yml`](config.yml) is configurable using [`--config-dir`](#command-line-options) (see [Command-line options](#command-line-options)).
 
 **Priority**: command-line options > environment variables > [`config.yml`](config.yml) > built-in defaults.
 
@@ -38,7 +68,7 @@ cp "$HOME/.config/soularr/config.ini" "$HOME/.config/soulseekarr/config.ini"
 python3 soulseekarr.py # exits after migration
 ```
 
-**Note:** Not all Soulseekarr options are covered by a Soularr `config.ini`, therefore it is still recommended to inspect the `config.yml` after migration.
+**Note:** Not all Soulseekarr options are covered by a Soularr `config.ini`, therefore it is still recommended to inspect the [`config.yml`](config.yml) after migration.
 
 #### Option 2: Copy the sample [config.yml](config.yml) template to the Soulseekarr configuration directory
 
@@ -47,12 +77,13 @@ mkdir -p "$HOME/.config/soulseekarr"
 cp config.yml "$HOME/.config/soulseekarr/config.yml"
 ```
 
-### 2. Edit [`config.yml`](config.yml)
+### 2. Configure the [`config.yml`](config.yml) template
 
-**Configuration options are covered in-depth in the [`config.yml`](config.yml) template.**
-`lidarr.import_timeout` controls how long Soulseekarr waits for a Lidarr import command. A timed-out import is treated as pending and is not regrabbed during the current process, because Lidarr may still complete it.
+Every option is documented in the sample [`config.yml`](config.yml) template.
 
-### 3. Environment Variables
+---
+
+### Environment Variables
 
 - Any `lidarr:`/`slskd:` setting can be overridden with an env var named after its YAML key, underscored and uppercased
 and prefixed with the section (similar to Slskd):
@@ -61,7 +92,7 @@ and prefixed with the section (similar to Slskd):
   - `interval` -> `LOOP_INTERVAL` (`SCRIPT_INTERVAL` is supported for backward compatibility)
 - Multi-option environment variables use comma-separated lists (e.g. `LIDARR_ACCEPTED_FORMATS=CD,Digital Media,Vinyl`).
 
-### 4. Command-line options
+### Command-line options
 
 The following runtime options can be passed directly to `soulseekarr.py` or the container,
 and control where Soulseekarr runs and how often it checks for wanted releases.
@@ -71,7 +102,7 @@ and control where Soulseekarr runs and how often it checks for wanted releases.
 | `-c`, `--config-dir [PATH]` | Directory containing `config.yml` | Current working directory, or `/data` in Docker |
 | `-v`, `--var-dir [PATH]` | Directory for runtime files such as the lock file and logs | Current working directory, or `/data` in container |
 | `--no-lock-file` | Disable lock-file creation when running outside Docker | Lock file enabled |
-| `--interval SECONDS` | Override `interval` and loop forever; `0` runs once | `LOOP_INTERVAL`, then legacy `SCRIPT_INTERVAL`, then `config.yml`, then `300` in Docker or one run locally |
+| `--interval SECONDS` | Override `interval` and loop forever; `0` runs once | `LOOP_INTERVAL`, then `config.yml`, then `300` in Docker or one run locally |
 
 Example:
 
@@ -154,40 +185,6 @@ logging:
   ```
 
 See the [Python logging documentation](https://docs.python.org/3/library/logging.html) for advanced logging usage.
-
-## Soulseekarr vs. Soularr
-
-Soulseekarr began as a fork of [mrusse/soularr](https://github.com/mrusse/soularr), but most of its search, matching, configuration, state-management, download-monitoring, and Lidarr-integration code has been rewritten. The primary change is to implement albums as objects for lifecycle monitoring, enabling the following features.
-
-### Improvements/Changes
-
-#### Per-list YAML configuration
-  
-The `missing` and `cutoff_unmet` Lidarr lists can override the default Lidarr and slskd settings independently. Different lists can therefore use different formats, regions, sorting methods, search timeouts, matching thresholds, and download behavior.
-
-#### Flexible sorting and randomization
-
-Wanted albums can follow Lidarr column sorting, be shuffled within each source list, or be shuffled together across all enabled lists.
-
-#### Fewer Lidarr API requests
-
-Soulseekarr retrieves wanted records in configurable batches, retains the remaining albums between processing cycles, deduplicates albums across lists, and reuses album and release information where possible.
-
-#### Faster searching
-
-Soulseekarr keeps two searches pending in slskd while completed results are collected and matched. New searches fill freed slots before potentially expensive release matching and download enqueueing begins. Searches remain available through their configured timeout window before results are collected and optional cleanup is performed.
-
-#### Better search matching
-
-Search supports fuzzy matching so bonus albums and other similar matches aren't skipped. Every complete album candidate is discovered before enqueueing, scored by filename quality and peer availability, and ranked within the configured file-type and release preferences. Unused candidates remain available as fallbacks even after the slskd search is deleted.
-
-#### Improved queue control
-
-Configurable chunk sizes determine how many albums are processed per cycle. Soulseekarr can filter unwanted files, enforce file-count safety limits, handle multi-disc releases, require all expected tracks to be accepted, and continue processing new Lidarr batches when download monitoring is disabled.
-
-#### Album-aware download handling
-
-Downloads are monitored as complete albums rather than unrelated transfers. Soulseekarr can detect missing statuses, stalled downloads, remote-queue timeouts, rejected transfers, hard failures, incomplete optional files, and partially accepted enqueue requests. When failed-download requeueing is enabled, any terminal transfer failure replaces the entire attempted album with the next ranked complete candidate; successful files from the failed attempt are never mixed into the replacement. Candidates that cannot be enqueued are skipped before the album is marked failed.
 
 ## Additional Info
 

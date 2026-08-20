@@ -1,4 +1,10 @@
 ---
+# How long to wait in seconds before relooping Soulseekarr and recaching Lidarr wanted lists.
+# If slskd.monitor_downloads is True: reloops after all downloads (and fallbacks) have completed.
+# If slskd.monitor_downloads is False: reloops immediately after all downloads are queued.
+# Can be 0, but a small safety buffer is recommended in the event of small or non-existent wanted lists.
+interval: 30
+
 lidarr:
   # Get from Lidarr: Settings > General > Security
   api_key: yourlidarrapikey
